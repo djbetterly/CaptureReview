@@ -48,13 +48,20 @@ nonisolated enum SQLValue: Sendable {
 actor Catalog {
     nonisolated let sessionRoot: URL
     nonisolated let fileURL: URL
-    nonisolated let sessionID: String
+    /// Permanent id of this session (its gallery is keyed on it). Changes only when the user says a
+    /// copied session is a new job.
+    private(set) var sessionID: String
+    /// Session folder name recorded the last time the catalog was opened (nil = first time).
+    /// A different name usually means the session folder was copied for a new job.
+    nonisolated let storedSessionName: String?
 
     private let db: OpaquePointer?
     private var images: [String: CatalogImage] = [:]
     private var pathIndex: [String: String] = [:]          // relPath -> image_id (not deleted)
     private var sent: [String: String] = [:]               // "image_id#position" -> live text sent
-    private var sentDisk: [String: [String]] = [:]         // "image_id#position" -> settings-file entries after the send
+    private var sentDisk: [String: [String]] = [:]
+    /// Events not yet written to the upload log (any caller's scan adds to it; the window drains it)
+    private var undelivered: [CatalogEvent] = []         // "image_id#position" -> settings-file entries after the send
 
     /// A file that vanished is only called deleted after it has stayed gone this long
     /// (a move or rename shows up again in the next scan).
@@ -109,6 +116,9 @@ actor Catalog {
             Self.run(handle, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '1')", [])
         }
         sessionID = sid
+        var storedName: String?
+        Self.query(handle, "SELECT value FROM meta WHERE key='session_name'") { storedName = Self.text($0, 0) }
+        storedSessionName = storedName
 
         var loaded: [String: CatalogImage] = [:]
         Self.query(handle, """
@@ -138,6 +148,57 @@ actor Catalog {
     }
 
     deinit { sqlite3_close(db) }
+
+    /// Events since the last call (from every scan, whoever ran it).
+    func drainEvents() -> [CatalogEvent] {
+        defer { undelivered = [] }
+        return undelivered
+    }
+
+    // MARK: - Session identity
+
+    /// Records the session folder's current name (same job, possibly renamed or moved).
+    func setSessionName(_ name: String) {
+        Self.run(db, "INSERT OR REPLACE INTO meta(key, value) VALUES('session_name', ?)", [.text(name)])
+    }
+
+    /// A copied session used for a NEW job: new session id (so a new gallery), and nothing counts
+    /// as sent any more. Image identities and history are kept.
+    func startNewJob(name: String) -> String {
+        let old = sessionID
+        sessionID = UUID().uuidString
+        Self.run(db, "INSERT OR REPLACE INTO meta(key, value) VALUES('session_id', ?)", [.text(sessionID)])
+        Self.run(db, "INSERT OR REPLACE INTO meta(key, value) VALUES('session_name', ?)", [.text(name)])
+        Self.run(db, "DELETE FROM meta WHERE key='gallery_id'", [])
+        Self.run(db, "INSERT INTO events(at, image_id, kind, detail) VALUES(?,?,?,?)",
+                 [.real(Date().timeIntervalSince1970), .text(""), .text("new_job"),
+                  .text("Session copied for a new job (was \(old))")])
+        forgetSent()
+        return sessionID
+    }
+
+    /// The gallery this session publishes to (remembered so the session opens offline too).
+    func storedGalleryID() -> UUID? {
+        var value = ""
+        Self.query(db, "SELECT value FROM meta WHERE key='gallery_id'") { value = Self.text($0, 0) }
+        return UUID(uuidString: value)
+    }
+
+    func setGalleryID(_ id: UUID) {
+        Self.run(db, "INSERT OR REPLACE INTO meta(key, value) VALUES('gallery_id', ?)", [.text(id.uuidString)])
+    }
+
+    /// Whether this image is currently in the Capture folders (false: deleted, missing, or moved out).
+    func isInCapture(uid: String) -> Bool {
+        guard let img = images[uid] else { return true }        // unknown: don't block the upload
+        return img.state != "deleted" && img.relPath.hasPrefix("Capture/")
+    }
+
+    /// Every image the catalog knows (for syncing the gallery).
+    func snapshot() -> [CatalogImage] { Array(images.values) }
+
+    /// The permanent id of the image at this Capture path ("Set_01/A.CR3"), if catalogued.
+    func imageUID(captureRel: String) -> String? { imageID(captureRel: captureRel) }
 
     // MARK: - Scanning
 
@@ -264,6 +325,7 @@ actor Catalog {
                                 detail: "Catalog created: \(images.count) images (session \(sessionID.prefix(8)))"))
         }
         save(dirty: dirty, events: events)
+        undelivered.append(contentsOf: events)
 
         var index: [String: String] = [:]
         for img in images.values where img.state != "deleted" { index[img.relPath] = img.id }

@@ -12,6 +12,12 @@ struct ContentView: View {
     @State private var catalog: Catalog?
     @State private var cosLog: CosLog?
     @State private var cosMonitor: CosMonitor?
+    @State private var galleryName = ""
+    // "Same job or new job?" when a session's folder name differs from its catalog
+    @State private var showCopyPrompt = false
+    @State private var copyURL: URL?
+    @State private var copyCatalog: Catalog?
+    @State private var copyOldName = ""
     @State private var status = "Choose a Capture One session folder"
     @State private var stats = UploadStats()
     @State private var syncStatus = SyncStatus()
@@ -66,6 +72,9 @@ struct ContentView: View {
             Button("Choose Session Folder…") { chooseSession() }
             if let sessionURL {
                 Text(sessionURL.lastPathComponent).font(.headline)
+                if !galleryName.isEmpty {
+                    Text("Gallery: \(galleryName)").font(.caption).foregroundStyle(.secondary)
+                }
                 folderSection
                 qualitySection
                 regradeBanner
@@ -86,12 +95,30 @@ struct ContentView: View {
             NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil          // count on the Dock icon
         }
         .onAppear { connectAutoPublisher() }
+        .confirmationDialog("Is this the same job?", isPresented: $showCopyPrompt, titleVisibility: .visible) {
+            Button("Same job (keep its gallery)") {
+                guard let url = copyURL, let cat = copyCatalog else { return }
+                Task { await cat.setSessionName(url.lastPathComponent); openSession(url, cat) }
+            }
+            Button("New job (new gallery)") {
+                guard let url = copyURL, let cat = copyCatalog else { return }
+                Task { _ = await cat.startNewJob(name: url.lastPathComponent); openSession(url, cat) }
+            }
+            Button("Cancel", role: .cancel) { copyCatalog = nil; copyURL = nil }
+        } message: {
+            Text("This session was last opened as \u{201C}\(copyOldName)\u{201D}. If the folder was copied for a different job, choose New job so it gets its own gallery.")
+        }
         .task {
             // Per-folder upload counts, refreshed every 3 s from the uploader's local cache
             while !Task.isCancelled {
                 if let uploader { uploadedCounts = await uploader.uploadedCounts() }
                 refreshFolders()
-                if let catalog { logCatalog(await catalog.scan()) }
+                if let catalog {
+                    await catalog.scan()
+                    logCatalog(await catalog.drainEvents())
+                }
+                // Renames / deletes reach the gallery even when nothing is being published
+                if let uploader { await uploader.syncCatalog() }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
@@ -352,11 +379,36 @@ struct ContentView: View {
             return
         }
 
+        // The session catalog decides which gallery this session publishes to. Without it,
+        // nothing is published (it would risk mixing jobs).
+        guard let cat = Catalog(sessionRoot: url) else {
+            status = "Couldn't open the session catalog (.capturereview in the session folder). Nothing will be published."
+            return
+        }
+        let name = url.lastPathComponent
+        if let stored = cat.storedSessionName, stored != name {
+            // Folder renamed, or copied from another job: ask before choosing the gallery
+            copyURL = url
+            copyCatalog = cat
+            copyOldName = stored
+            showCopyPrompt = true
+            return
+        }
+        Task {
+            await cat.setSessionName(name)
+            openSession(url, cat)
+        }
+    }
+
+    /// Opens a session with its catalog: folders, logs, its own gallery, uploader and rating sync.
+    private func openSession(_ url: URL, _ cat: Catalog) {
         sessionURL = url
         selection = []
         folders = Self.captureFolders(in: url)
         log.start(session: url.lastPathComponent)
         auto.setSession(url)
+        access = nil
+        galleryName = ""
 
         // Detailed log of what Capture One does to the settings files, plus re-grade decisions
         let settingsLog = CosLog(session: url.lastPathComponent)
@@ -367,15 +419,42 @@ struct ContentView: View {
 
         Task {
             await uploader?.stop()
-            // Session catalog: identity, history, what was sent. First run catalogues the session.
-            let cat = Catalog(sessionRoot: url)
-            if let cat { logCatalog(await cat.scan()) }
-            else { log.add(UploadLogEntry(time: Date(), name: "Catalog", kind: .failed, quality: "", width: 0, height: 0,
-                                          bytes: 0, seconds: 0, note: "Couldn't open the session catalog (.capturereview)")) }
+            await ratingSync?.stop()
+            uploader = nil
+            ratingSync = nil
+            await cat.scan()
+            logCatalog(await cat.drainEvents())
             catalog = cat
+
+            // This session's gallery: remembered in the catalog (works offline), else found by the
+            // session id on the server, else created and named after the session folder.
+            let galleryID: UUID
+            if let known = await cat.storedGalleryID() {
+                galleryID = known
+            } else {
+                status = "Finding this session's gallery…"
+                do {
+                    let ref = try await GalleryDirectory.resolve(supabaseURL: Config.supabaseURL, serviceKey: serviceKey,
+                                                                 sessionUID: await cat.sessionID,
+                                                                 sessionName: url.lastPathComponent)
+                    galleryID = ref.id
+                    await cat.setGalleryID(ref.id)
+                    log.add(UploadLogEntry(time: Date(), name: "Gallery", kind: .info, quality: "", width: 0, height: 0,
+                                           bytes: 0, seconds: 0,
+                                           note: (ref.created ? "Gallery created: " : "Gallery loaded: ")
+                                               + "\(ref.name) (\(ref.id.uuidString.prefix(8)))"))
+                } catch {
+                    status = "Couldn't reach the server to set up this session's gallery (\(error.localizedDescription)). "
+                        + "Nothing will be published; choose the session again once online."
+                    log.add(UploadLogEntry(time: Date(), name: "Gallery", kind: .failed, quality: "", width: 0, height: 0,
+                                           bytes: 0, seconds: 0, note: "No gallery: \(error.localizedDescription)"))
+                    return
+                }
+            }
+
             let up = ProofUploader(supabaseURL: Config.supabaseURL,
                                    serviceKey: serviceKey,
-                                   galleryID: Config.galleryID,
+                                   galleryID: galleryID,
                                    sessionRoot: url,
                                    stats: stats,
                                    quality: quality,
@@ -385,11 +464,11 @@ struct ContentView: View {
             await up.start()
             uploader = up
             access = await up.galleryAccess()
+            galleryName = access?.name ?? ""
 
-            await ratingSync?.stop()
             let rs = RatingSync(supabaseURL: Config.supabaseURL,
                                 serviceKey: serviceKey,
-                                galleryID: Config.galleryID,
+                                galleryID: galleryID,
                                 sessionRoot: url,
                                 status: syncStatus)
             await rs.start()

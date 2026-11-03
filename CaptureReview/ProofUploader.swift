@@ -30,6 +30,7 @@ nonisolated struct ImageRow: Encodable, Sendable {
     let source_stamp: String
     let proof_bytes: Int
     let thumb_bytes: Int
+    let image_uid: String?            // session catalog's permanent image id (renames keep it)
 }
 
 nonisolated struct VariantIDPatch: Encodable, Sendable {
@@ -167,6 +168,7 @@ actor ProofUploader {
         let position: Int
         let stamp: String              // live fingerprint at publish time
         let liveText: String           // the readable adjustments behind it (recorded in the catalog)
+        let imageUID: String?          // session catalog's permanent id for the RAW
         let displayName: String
         let oldPaths: [String]
     }
@@ -179,6 +181,8 @@ actor ProofUploader {
         let quality: String?
         let storage_path: String?
         let thumb_path: String?
+        var image_uid: String? = nil
+        var deleted_at: String? = nil
     }
 
     static let rawExtensions: Set<String> =
@@ -265,6 +269,10 @@ actor ProofUploader {
                    debounce: Bool = false, scoped: Bool = false, holdRegrades: Bool = false) async -> PublishPlan {
         var plan = PublishPlan()
         let target = await MainActor.run { quality.effective }
+
+        // Renames, moves, deletes and restores go to the gallery FIRST: otherwise a renamed RAW
+        // would look like a new frame and be uploaded a second time.
+        await syncCatalog()
 
         let existing: [String: ExistingRow]
         do { existing = try await existingRows() }
@@ -523,6 +531,7 @@ actor ProofUploader {
             queued[key] = Pending(folder: folder, raw: raw, variantID: v.id, position: v.position,
                                   stamp: v.live,
                                   liveText: v.liveText,
+                                  imageUID: await catalog?.imageUID(captureRel: relPath),
                                   displayName: display,
                                   oldPaths: [old?.storage_path, old?.thumb_path].compactMap { $0 })
             plan.variantIDs.append(v.id)
@@ -543,6 +552,93 @@ actor ProofUploader {
             await MainActor.run { stats.begin(total: plan.variantIDs.count) }
         }
         return plan
+    }
+
+    // MARK: - Catalog sync (renames, moves, deletes, restores)
+
+    nonisolated private struct Move: Encodable, Sendable {
+        let uid: String
+        let rel_path: String
+        let folder_path: String
+        let filename: String
+        let stem: String
+        let deleted: Bool
+    }
+    nonisolated private struct MovesParams: Encodable, Sendable {
+        let p_gallery: String
+        let p_moves: [Move]
+    }
+    private var syncingCatalog = false
+    private var lastSyncFailureLog = Date.distantPast
+
+    /// Makes the gallery match the session catalog. Stateless: every pass compares the catalog with
+    /// the server rows (by image id) and fixes every difference, so a missed pass or an offline
+    /// stretch heals itself on the next one.
+    ///   renamed / moved inside Capture -> row follows (same row id: client ratings stay)
+    ///   deleted (Trash, or gone for 10 s) or moved out of Capture -> hidden, ratings kept
+    ///   back in Capture -> shown again with its ratings
+    /// Rows without an image id (uploaded before the catalog) are never touched.
+    func syncCatalog() async {
+        guard let catalog, !syncingCatalog else { return }
+        syncingCatalog = true
+        defer { syncingCatalog = false }
+
+        await catalog.scan()
+        let images = await catalog.snapshot()
+        guard let rows = try? await existingRows() else { return }
+        var byUID: [String: ExistingRow] = [:]
+        for r in rows.values {
+            guard let uid = r.image_uid else { continue }
+            // prefer the visible row if there are several (variants share one path anyway)
+            if byUID[uid] == nil || (byUID[uid]?.deleted_at != nil && r.deleted_at == nil) { byUID[uid] = r }
+        }
+        guard !byUID.isEmpty else { return }
+
+        var moves: [Move] = []
+        var notes: [(name: String, note: String)] = []
+        for img in images where img.state != "missing" {            // missing = still deciding (grace period)
+            guard let row = byUID[img.id] else { continue }         // never published
+            let hidden = row.deleted_at != nil
+            let prefix = "Capture/"
+            let visible = img.state == "present" && img.relPath.hasPrefix(prefix)
+            if visible {
+                let rel = String(img.relPath.dropFirst(prefix.count))
+                guard hidden || row.rel_path != rel else { continue }
+                moves.append(Self.move(uid: img.id, rel: rel, deleted: false))
+                notes.append((img.filename, hidden ? "Restored on the gallery as \(rel)"
+                                                   : "Renamed on the gallery: \(row.rel_path) → \(rel)"))
+            } else if !hidden {
+                moves.append(Self.move(uid: img.id, rel: row.rel_path, deleted: true))
+                notes.append((img.filename, img.relPath.hasPrefix("Trash/")
+                    ? "Hidden on the gallery (moved to Trash in Capture One; ratings kept)"
+                    : "Hidden on the gallery (no longer in the Capture folders; ratings kept)"))
+            }
+        }
+        guard !moves.isEmpty else { return }
+
+        do {
+            _ = try await client.rpc("app_apply_moves",
+                                     params: MovesParams(p_gallery: galleryID.uuidString, p_moves: moves)).execute()
+        } catch {
+            if Date().timeIntervalSince(lastSyncFailureLog) > 60 {
+                lastSyncFailureLog = Date()
+                await addLog(name: "Gallery sync", kind: .failed,
+                             note: "\(moves.count) rename/delete change(s) not sent yet, retrying: \(error.localizedDescription)")
+            }
+            return
+        }
+        for n in notes { await addLog(name: n.name, kind: .info, note: n.note) }
+        // Reload the rows so the planner sees the new names (no stale copies of the old ones)
+        rowCache = nil
+        rowCacheTime = .distantPast
+        localWrites = [:]
+    }
+
+    nonisolated private static func move(uid: String, rel: String, deleted: Bool) -> Move {
+        let filename = (rel as NSString).lastPathComponent
+        let folder = (rel as NSString).deletingLastPathComponent
+        return Move(uid: uid, rel_path: rel, folder_path: folder, filename: filename,
+                    stem: (filename as NSString).deletingPathExtension, deleted: deleted)
     }
 
     // MARK: - Client access (link + code)
@@ -580,7 +676,7 @@ actor ProofUploader {
     func uploadedCounts() async -> [String: Int] {
         guard let rows = try? await existingRows() else { return [:] }
         var counts: [String: Int] = [:]
-        for row in rows.values {
+        for row in rows.values where row.deleted_at == nil && !row.rel_path.hasPrefix(".") {
             let parts = row.rel_path.split(separator: "/")
             counts[parts.count > 1 ? String(parts[0]) : "", default: 0] += 1
         }
@@ -677,7 +773,7 @@ actor ProofUploader {
         guard let r = rowCache?["\(relPath)#\(position)"] else { return }
         cacheRow("\(relPath)#\(position)", ExistingRow(
             rel_path: r.rel_path, variant_id: r.variant_id, variant_position: r.variant_position,
-            source_stamp: stamp, quality: r.quality, storage_path: r.storage_path, thumb_path: r.thumb_path))
+            source_stamp: stamp, quality: r.quality, storage_path: r.storage_path, thumb_path: r.thumb_path, image_uid: r.image_uid, deleted_at: r.deleted_at))
     }
 
     /// Updates the stored fingerprint without re-sending the image.
@@ -685,7 +781,7 @@ actor ProofUploader {
         if let r = rowCache?["\(relPath)#\(position)"] {
             cacheRow("\(relPath)#\(position)", ExistingRow(
                 rel_path: r.rel_path, variant_id: r.variant_id, variant_position: r.variant_position,
-                source_stamp: stamp, quality: r.quality, storage_path: r.storage_path, thumb_path: r.thumb_path))
+                source_stamp: stamp, quality: r.quality, storage_path: r.storage_path, thumb_path: r.thumb_path, image_uid: r.image_uid, deleted_at: r.deleted_at))
         }
         _ = try? await client.from("images")
             .update(StampPatch(source_stamp: stamp))
@@ -700,7 +796,7 @@ actor ProofUploader {
         if let r = rowCache?["\(relPath)#\(position)"] {
             cacheRow("\(relPath)#\(position)", ExistingRow(
                 rel_path: r.rel_path, variant_id: id, variant_position: r.variant_position,
-                source_stamp: r.source_stamp, quality: r.quality, storage_path: r.storage_path, thumb_path: r.thumb_path))
+                source_stamp: r.source_stamp, quality: r.quality, storage_path: r.storage_path, thumb_path: r.thumb_path, image_uid: r.image_uid, deleted_at: r.deleted_at))
         }
         _ = try? await client.from("images")
             .update(VariantIDPatch(variant_id: id))
@@ -718,7 +814,7 @@ actor ProofUploader {
         var from = 0
         while true {
             let rows: [ExistingRow] = try await client.from("images")
-                .select("rel_path, variant_id, variant_position, source_stamp, quality, storage_path, thumb_path")
+                .select("rel_path, variant_id, variant_position, source_stamp, quality, storage_path, thumb_path, image_uid, deleted_at")
                 .eq("gallery_id", value: galleryID.uuidString)
                 .range(from: from, to: from + 999)
                 .execute().value
@@ -872,6 +968,16 @@ actor ProofUploader {
             return
         }
 
+        // Deleted in Capture One while waiting to upload: don't bring it back
+        if let uid = item.imageUID, let catalog, await !catalog.isInCapture(uid: uid) {
+            await addLog(name: item.displayName, kind: .discarded, note: "Deleted in Capture One before it uploaded")
+            try? FileManager.default.removeItem(at: master)
+            pending[key] = nil
+            retryAfter[key] = nil
+            thumbDone[key] = nil
+            return
+        }
+
         await MainActor.run { stats.inFlight += 1 }
         do {
             try await upload(master, item, key: key)
@@ -948,14 +1054,15 @@ actor ProofUploader {
                            variant_position: item.position, display_name: item.displayName,
                            storage_path: proofPath, thumb_path: thumbPath,
                            quality: profile.rawValue, source_stamp: Stamp(live: stamp, disk: "").text,
-                           proof_bytes: proof.data.count, thumb_bytes: thumb.data.count)
+                           proof_bytes: proof.data.count, thumb_bytes: thumb.data.count,
+                           image_uid: item.imageUID)
         try await client.from("images")
             .upsert(row, onConflict: "gallery_id,rel_path,variant_position")
             .execute()
         cacheRow("\(relPath)#\(item.position)", ExistingRow(
             rel_path: relPath, variant_id: item.variantID, variant_position: item.position,
             source_stamp: row.source_stamp, quality: row.quality,
-            storage_path: proofPath, thumb_path: thumbPath))
+            storage_path: proofPath, thumb_path: thumbPath, image_uid: item.imageUID))
 
         await catalog?.recordSent(captureRel: relPath, position: item.position, variantID: item.variantID,
                                   live: item.liveText, proofPath: proofPath, thumbPath: thumbPath,
