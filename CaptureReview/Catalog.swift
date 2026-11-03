@@ -54,6 +54,7 @@ actor Catalog {
     private var images: [String: CatalogImage] = [:]
     private var pathIndex: [String: String] = [:]          // relPath -> image_id (not deleted)
     private var sent: [String: String] = [:]               // "image_id#position" -> live text sent
+    private var sentDisk: [String: [String]] = [:]         // "image_id#position" -> settings-file entries after the send
 
     /// A file that vanished is only called deleted after it has stayed gone this long
     /// (a move or rename shows up again in the next scan).
@@ -96,6 +97,9 @@ actor Catalog {
             id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, image_id TEXT, kind TEXT, detail TEXT);
         """)
 
+        // v2: settings-file baseline per variant (fails harmlessly if the column exists)
+        Self.exec(handle, "ALTER TABLE variants ADD COLUMN sent_disk TEXT")
+
         // Session identity: made once, kept forever (galleries will be keyed on this, not the name)
         var sid = ""
         Self.query(handle, "SELECT value FROM meta WHERE key='session_id'") { sid = Self.text($0, 0) }
@@ -122,6 +126,12 @@ actor Catalog {
             loadedSent["\(Self.text(s, 0))#\(sqlite3_column_int(s, 1))"] = Self.text(s, 2)
         }
         sent = loadedSent
+        var loadedDisk: [String: [String]] = [:]
+        Self.query(handle, "SELECT image_id, position, sent_disk FROM variants WHERE sent_disk IS NOT NULL") { s in
+            loadedDisk["\(Self.text(s, 0))#\(sqlite3_column_int(s, 1))"] =
+                Self.text(s, 2).split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        }
+        sentDisk = loadedDisk
         var index: [String: String] = [:]
         for img in loaded.values where img.state != "deleted" { index[img.relPath] = img.id }
         pathIndex = index
@@ -354,9 +364,29 @@ actor Catalog {
         """, [.text(id), .int(Int64(position)), .text(variantID), .text(live), .real(Date().timeIntervalSince1970)])
     }
 
+    /// Settings-file entries recorded at the first flush after the proof went out (nil = none).
+    func diskBaseline(captureRel: String, position: Int) -> [String]? {
+        guard let id = pathIndex["Capture/" + captureRel] else { return nil }
+        return sentDisk["\(id)#\(position)"]
+    }
+
+    /// Records the settings-file entries that match the client's proof. `overwrite` false:
+    /// only if none is recorded yet (proofs sent before the catalog existed).
+    func recordDiskBaseline(captureRel: String, position: Int, entries: [String], overwrite: Bool) {
+        guard !entries.isEmpty, let id = imageID(captureRel: captureRel) else { return }
+        let key = "\(id)#\(position)"
+        if !overwrite, sentDisk[key] != nil { return }
+        sentDisk[key] = entries
+        Self.run(db, """
+        INSERT INTO variants(image_id, position, sent_disk) VALUES(?,?,?)
+        ON CONFLICT(image_id, position) DO UPDATE SET sent_disk=excluded.sent_disk
+        """, [.text(id), .int(Int64(position)), .text(entries.joined(separator: "\n"))])
+    }
+
     /// Test reset: the gallery was wiped, so nothing counts as sent any more.
     func forgetSent() {
         sent = [:]
+        sentDisk = [:]
         Self.exec(db, "DELETE FROM variants")
     }
 

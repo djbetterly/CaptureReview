@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var uploader: ProofUploader?
     @State private var ratingSync: RatingSync?
     @State private var catalog: Catalog?
+    @State private var cosLog: CosLog?
+    @State private var cosMonitor: CosMonitor?
     @State private var status = "Choose a Capture One session folder"
     @State private var stats = UploadStats()
     @State private var syncStatus = SyncStatus()
@@ -201,6 +203,11 @@ struct ContentView: View {
         HStack {
             Button("Open Gallery") { openGallery() }
             Button("Upload Log") { log.showWindow() }
+            Button("Settings Log") {
+                if let url = cosLog?.url { NSWorkspace.shared.open(url) }
+                else { status = "Choose a session first" }
+            }
+            .help("Everything Capture One writes to the settings (.cos) files, and every re-grade decision")
             Spacer()
             Toggle("Show test tools", isOn: $showTestTools)
                 .toggleStyle(.checkbox).controlSize(.small)
@@ -351,6 +358,13 @@ struct ContentView: View {
         log.start(session: url.lastPathComponent)
         auto.setSession(url)
 
+        // Detailed log of what Capture One does to the settings files, plus re-grade decisions
+        let settingsLog = CosLog(session: url.lastPathComponent)
+        let monitor = CosMonitor(sessionRoot: url, log: settingsLog)
+        monitor.start()
+        cosLog = settingsLog
+        cosMonitor = monitor
+
         Task {
             await uploader?.stop()
             // Session catalog: identity, history, what was sent. First run catalogues the session.
@@ -366,7 +380,8 @@ struct ContentView: View {
                                    stats: stats,
                                    quality: quality,
                                    log: log,
-                                   catalog: cat)
+                                   catalog: cat,
+                                   cosLog: settingsLog)
             await up.start()
             uploader = up
             access = await up.galleryAccess()

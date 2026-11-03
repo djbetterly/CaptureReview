@@ -193,6 +193,8 @@ actor ProofUploader {
     private let log: UploadLog
     /// Session catalog: image identity and what each proof was sent with (re-grade baseline).
     private let catalog: Catalog?
+    /// Detailed settings-file / re-grade decision log (<session>-settings.log)
+    private let cosLog: CosLog?
 
     /// "<RAW stem>_v<position>" -> what to do with that rendered master
     private var pending: [String: Pending] = [:]
@@ -231,7 +233,7 @@ actor ProofUploader {
     private var pollTask: Task<Void, Never>?
 
     init(supabaseURL: URL, serviceKey: String, galleryID: UUID, sessionRoot: URL,
-         stats: UploadStats, quality: QualitySettings, log: UploadLog, catalog: Catalog? = nil) {
+         stats: UploadStats, quality: QualitySettings, log: UploadLog, catalog: Catalog? = nil, cosLog: CosLog? = nil) {
         client = SupabaseClient(
             supabaseURL: supabaseURL,
             supabaseKey: serviceKey,
@@ -242,6 +244,7 @@ actor ProofUploader {
         self.quality = quality
         self.log = log
         self.catalog = catalog
+        self.cosLog = cosLog
         captureRoot = sessionRoot.appendingPathComponent("Capture").standardizedFileURL
         proofDir = sessionRoot.appendingPathComponent("Output/_proof")
     }
@@ -396,6 +399,13 @@ actor ProofUploader {
                 if old == nil { plan.new += 1 } else { plan.changed += 1 }
                 reasons.append("\(label) forced")
             case .changed:
+                // Settings file changed since the last check of this variant: visible, or just noise /
+                // a nudge below the threshold? (Judged against the file as it was after the last send.)
+                let diskEntries = (parsed.ready && index >= 0) ? parsed.entries[index] : []
+                let diskChanged = old != nil && !disk.isEmpty && !oldStamp.disk.isEmpty && oldStamp.disk != disk
+                let diskVisible = diskChanged
+                    ? await isVisibleDiskChange(relPath: relPath, position: v.position, label: label, now: diskEntries)
+                    : false
                 if old == nil {
                     plan.new += 1
                     reasons.append("\(label) new")
@@ -407,14 +417,14 @@ actor ProofUploader {
                     if !v.liveText.isEmpty { sentLiveText[settingsKey] = v.liveText }
                     plan.skipped += 1
                     continue
-                } else if !v.live.isEmpty, oldStamp.live != v.live,
-                          disk.isEmpty || oldStamp.disk.isEmpty || oldStamp.disk == disk,
-                          await !isVisibleChange(relPath: relPath, position: v.position, key: settingsKey, now: v.liveText) {
+                } else if !v.live.isEmpty, oldStamp.live != v.live, !diskVisible,
+                          await !isVisibleChange(relPath: relPath, position: v.position, key: settingsKey,
+                                                 label: label, now: v.liveText) {
                     // Adjustments changed, but not enough to see on a proof (rounding noise, a tiny
                     // nudge). Remember the new fingerprint locally so it isn't re-checked every pass;
                     // the baseline stays what was SENT, so small changes that add up still count.
                     cacheStampLocally(relPath: relPath, position: v.position,
-                                      stamp: Stamp(live: v.live, disk: oldStamp.disk).text)
+                                      stamp: Stamp(live: v.live, disk: diskChanged ? disk : oldStamp.disk).text)
                     if waitingRegrades.remove(settingsKey) != nil {
                         await addLog(name: label, kind: .info, note: "Re-grade below the visible threshold, not sent")
                     }
@@ -447,9 +457,19 @@ actor ProofUploader {
                     plan.changed += 1
                     reasons.append("\(label) re-graded")
                     await logLiveChange(label: label, key: settingsKey, now: v.liveText)
-                } else if !disk.isEmpty, !oldStamp.disk.isEmpty, oldStamp.disk != disk {
+                } else if diskChanged {
                     // Live adjustments unchanged but the settings file changed: an edit the live
-                    // read can't see (local layers, color editor), caught at the next flush
+                    // read can't see (local layers, color editor), caught at the next flush.
+                    // Below the threshold (e.g. the flush of a nudge): note it locally, send nothing.
+                    if !diskVisible {
+                        cacheStampLocally(relPath: relPath, position: v.position,
+                                          stamp: Stamp(live: oldStamp.live, disk: disk).text)
+                        if waitingRegrades.remove(settingsKey) != nil {
+                            await addLog(name: label, kind: .info, note: "Settings change below the visible threshold, not sent")
+                        }
+                        plan.skipped += 1
+                        continue
+                    }
                     if holdRegrades {
                         if waitingRegrades.insert(settingsKey).inserted {
                             await addLog(name: label, kind: .info, note: "Settings file changed, waiting for Publish")
@@ -465,6 +485,15 @@ actor ProofUploader {
                         let live = v.live.isEmpty ? oldStamp.live : v.live    // quick inventory: keep the stored one
                         await updateStamp(relPath: relPath, position: v.position,
                                           stamp: Stamp(live: live, disk: disk).text)
+                        // First flush after the send: this is the file the client's proof matches
+                        await catalog?.recordDiskBaseline(captureRel: relPath, position: v.position,
+                                                          entries: diskEntries, overwrite: true)
+                        cosLog?.write(source: "Planner", file: label, event: "disk baseline",
+                                      detail: "first settings flush after send recorded (\(diskEntries.count) entries)")
+                    } else if !disk.isEmpty, oldStamp.disk == disk {
+                        // Sent before the catalog existed: the file still matches, adopt it as the baseline
+                        await catalog?.recordDiskBaseline(captureRel: relPath, position: v.position,
+                                                          entries: diskEntries, overwrite: false)
                     }
                     // Back to how it was published (e.g. the re-grade was undone): nothing waiting.
                     // (A quick read has no live value, so it can't tell; leave the flag alone then.)
@@ -609,11 +638,37 @@ actor ProofUploader {
     /// Whether the adjustments now differ VISIBLY from what the client's proof was made with.
     /// No recorded baseline (sent before the catalog existed, or the text couldn't be read):
     /// treat any change as visible, as before.
-    private func isVisibleChange(relPath: String, position: Int, key: String, now: String) async -> Bool {
+    private func isVisibleChange(relPath: String, position: Int, key: String, label: String,
+                                 now: String) async -> Bool {
         guard !now.isEmpty else { return true }
         let sent = await catalog?.sentLive(captureRel: relPath, position: position) ?? sentLiveText[key]
-        guard let sent, !sent.isEmpty else { return true }
-        return !VisualChange.significantChanges(sent: sent, now: now).isEmpty
+        guard let sent, !sent.isEmpty else {
+            cosLog?.write(source: "Planner", file: label, event: "live: no baseline",
+                          detail: "nothing recorded for the sent proof, any change counts as a re-grade")
+            return true
+        }
+        let result = VisualChange.analyze(sent: sent, now: now)
+        cosLog?.write(source: "Planner", file: label,
+                      event: result.visible.isEmpty ? "live: below threshold, not sent" : "live: visible re-grade",
+                      detail: "visible: " + (result.visible.isEmpty ? "none" : result.visible.joined(separator: "; "))
+                          + " | minor: " + (result.minor.isEmpty ? "none" : result.minor.joined(separator: "; ")))
+        return !result.visible.isEmpty
+    }
+
+    /// Same for the settings file, against the entries recorded at the first flush after the send.
+    private func isVisibleDiskChange(relPath: String, position: Int, label: String, now: [String]) async -> Bool {
+        guard !now.isEmpty,
+              let base = await catalog?.diskBaseline(captureRel: relPath, position: position), !base.isEmpty else {
+            cosLog?.write(source: "Planner", file: label, event: "disk: no baseline",
+                          detail: "settings file changed, nothing recorded to compare with: counts as a change")
+            return true
+        }
+        let result = VisualChange.analyzeDisk(sent: base, now: now)
+        cosLog?.write(source: "Planner", file: label,
+                      event: result.visible.isEmpty ? "disk: below threshold, not sent" : "disk: visible change",
+                      detail: "visible: " + (result.visible.isEmpty ? "none" : result.visible.joined(separator: "; "))
+                          + " | minor: " + (result.minor.isEmpty ? "none" : result.minor.joined(separator: "; ")))
+        return !result.visible.isEmpty
     }
 
     /// Updates the cached fingerprint only (no database write: on a dead link, hundreds of
@@ -1010,8 +1065,11 @@ nonisolated final class CosAdjustmentReader: NSObject, XMLParserDelegate {
     private var skipDepth = 0
 
     /// Process history is rewritten every time proofs are rendered.
-    private static let ignoredElements: Set<String> = ["PHS"]
-    private static let ignoredKeys: Set<String> = [
+    /// Settings log: keep the keys the fingerprint ignores (so we can see Capture One write them).
+    var keepIgnored = false
+
+    static let ignoredElements: Set<String> = ["PHS"]
+    static let ignoredKeys: Set<String> = [
         "LastMetadataModificationDate", "LowResProcessCounter", "UUID", "ProductID",
         // Values Capture One calculates for its dehaze tool when an image is viewed
         // (the user's dehaze setting itself, DehazeAmount/DehazeColor, is still tracked)
@@ -1026,10 +1084,15 @@ nonisolated final class CosAdjustmentReader: NSObject, XMLParserDelegate {
     ]
     /// Rating, color tag and metadata fields. (Color_Tag_Index was missing: tagging an image
     /// in Capture One flagged it as re-graded.)
-    private static let ignoredPrefixes = [
+    static let ignoredPrefixes = [
         "Basic_", "Content_", "Status_", "Image_", "Contact_", "Iptc", "IPTC", "Origin_", "Workflow_",
         "Color_Tag", "Rating"
     ]
+    /// Bookkeeping key the fingerprint skips (ratings, tags, metadata, counters).
+    static func isIgnored(_ key: String) -> Bool {
+        ignoredKeys.contains(key) || ignoredPrefixes.contains(where: { key.hasPrefix($0) })
+    }
+
     /// Changes whenever the ignore list changes, so old fingerprints aren't compared with new ones.
     static let digestVersion = "v4-"
 
@@ -1041,8 +1104,7 @@ nonisolated final class CosAdjustmentReader: NSObject, XMLParserDelegate {
 
         let where_ = path.joined(separator: "/")
         if name == "E", let key = attributes["K"] {
-            if Self.ignoredKeys.contains(key) { return }
-            if Self.ignoredPrefixes.contains(where: { key.hasPrefix($0) }) { return }
+            if !keepIgnored, Self.isIgnored(key) { return }
             current.append("\(where_)|\(key)=\(attributes["V"] ?? "")")
         } else {
             let attrs = attributes.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")

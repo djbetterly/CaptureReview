@@ -11,17 +11,23 @@
 import Foundation
 
 nonisolated enum VisualChange {
-    /// Per-setting tolerance, keyed by Capture One's 4-letter AppleScript code.
-    /// Anything not listed uses `defaultTolerance`. Tune here after a real shoot.
+    /// Per-setting threshold, keyed by Capture One's 4-letter AppleScript code (live read).
+    /// A change counts when it is AT LEAST this big. Anything not listed uses `defaultTolerance`.
+    /// Tune here after a real shoot.
     static let tolerance: [String: Double] = [
-        "CVex": 0.05,      // exposure, stops
+        "CVex": 0.1,       // exposure, stops: 0.01–0.09 is a nudge, 0.1 and up is a re-grade
         "CVwk": 50,        // white balance, kelvin
         "CVwt": 1.0,       // white balance tint
+    ]
+    /// The same thresholds for the settings file (.cos key names).
+    static let diskTolerance: [String: Double] = [
+        "Exposure": 0.1,
     ]
     /// Text settings whose change alone doesn't alter the picture
     /// (e.g. the white balance mode name; the kelvin/tint numbers carry the real change).
     static let ignoredText: Set<String> = ["CVwb"]
 
+    /// Default thresholds (a change counts when it reaches them).
     /// Settings 0…~1.5 in size (saturations, amounts): 0.01. Larger (sliders, hues): 1% of the
     /// value, at least 0.5. Crop: 0.5% of the value, at least 2 px.
     static func defaultTolerance(key: String, _ a: Double, _ b: Double) -> Double {
@@ -34,24 +40,65 @@ nonisolated enum VisualChange {
     /// The settings that changed visibly between what was sent and now, e.g. ["CVex 0→0.46"].
     /// Empty = not worth re-sending.
     static func significantChanges(sent: String, now: String) -> [String] {
-        let a = fields(sent), b = fields(now)
-        var out: [String] = []
+        analyze(sent: sent, now: now).visible
+    }
+
+    /// Live read: every changed setting, split into visible (re-grade) and minor (ignored).
+    static func analyze(sent: String, now: String) -> (visible: [String], minor: [String]) {
+        compare(fields(sent), fields(now), thresholds: tolerance, ignored: ignoredText)
+    }
+
+    /// Settings file: same idea for .cos entries ("path|Key=Value", structure "<Name attrs>@path").
+    /// Any structural change (a layer, mask or section added/removed) is visible.
+    static func analyzeDisk(sent: [String], now: [String]) -> (visible: [String], minor: [String]) {
+        func split(_ list: [String]) -> (values: [String: String], structure: Set<String>) {
+            var values: [String: String] = [:], structure = Set<String>()
+            for e in list {
+                if e.hasPrefix("<") { structure.insert(e); continue }
+                guard let bar = e.firstIndex(of: "|") else { continue }
+                let rest = e[e.index(after: bar)...]
+                guard let eq = rest.firstIndex(of: "=") else { continue }
+                let path = String(e[..<bar]), key = String(rest[..<eq])
+                values[path.isEmpty ? key : "\(path)/\(key)"] = String(rest[rest.index(after: eq)...])
+            }
+            return (values, structure)
+        }
+        let a = split(sent), b = split(now)
+        // thresholds are by .cos key name (last path component)
+        var byFullKey: [String: Double] = [:]
+        for k in Set(a.values.keys).union(b.values.keys) {
+            let name = String(k.split(separator: "/").last ?? Substring(k))
+            if let t = diskTolerance[name] { byFullKey[k] = t }
+        }
+        var result = compare(a.values, b.values, thresholds: byFullKey, ignored: [])
+        for added in b.structure.subtracting(a.structure).sorted() { result.visible.append("+" + short(added)) }
+        for removed in a.structure.subtracting(b.structure).sorted() { result.visible.append("-" + short(removed)) }
+        return result
+    }
+
+    private static func compare(_ a: [String: String], _ b: [String: String],
+                                thresholds: [String: Double], ignored: Set<String>)
+        -> (visible: [String], minor: [String]) {
+        var visible: [String] = [], minor: [String] = []
         for key in Set(a.keys).union(b.keys).sorted() {
             let x = a[key] ?? "", y = b[key] ?? ""
             if x == y { continue }
+            let line = "\(key) \(short(x))→\(short(y))"
             let nx = numbers(x), ny = numbers(y)
             if !nx.isEmpty || !ny.isEmpty {
-                // Numeric (or a list of numbers, e.g. a crop rectangle): compare each number
-                guard nx.count == ny.count else { out.append("\(key) \(x)→\(y)"); continue }
-                let changed = zip(nx, ny).contains { p, q in
-                    abs(p - q) > (tolerance[key] ?? defaultTolerance(key: key, p, q))
-                }
-                if changed { out.append("\(key) \(short(x))→\(short(y))") }
-            } else if !ignoredText.contains(key) {
-                out.append("\(key) \(short(x))→\(short(y))")     // text setting (e.g. a curve or profile name)
+                // Numeric (or a list of numbers, e.g. a crop rectangle or curve): compare each number
+                guard nx.count == ny.count else { visible.append(line); continue }
+                let biggest = zip(nx, ny).map { p, q in
+                    abs(p - q) / (thresholds[key] ?? defaultTolerance(key: key, p, q))
+                }.max() ?? 0
+                if biggest >= 1 - 1e-9 { visible.append(line) } else { minor.append(line) }
+            } else if ignored.contains(key) {
+                minor.append(line)
+            } else {
+                visible.append(line)                       // text setting (e.g. a profile name)
             }
         }
-        return out
+        return (visible, minor)
     }
 
     /// Splits Capture One's readable adjustments "{key=value,…}#crop" into fields.
