@@ -36,13 +36,9 @@ struct RegradeRulesView: View {
                     .onChange(of: structureCounts) { _, v in RegradeRules.shared.structureCounts = v }
             }
             List {
-                Section("Adjustments (Capture One's live values)") {
-                    ForEach(filtered(live)) { row in rowView(row) }
-                    if live.isEmpty { Text("Nothing read yet: open a session and publish once.").foregroundStyle(.secondary) }
-                }
-                Section("Only in the settings file: edits Capture One's live values don't show (local layers, color editor, some curves)") {
-                    ForEach(filtered(file)) { row in rowView(row) }
-                    if file.isEmpty { Text("Nothing read yet.").foregroundStyle(.secondary) }
+                ForEach(filtered(live + file)) { row in rowView(row) }
+                if live.isEmpty && file.isEmpty {
+                    Text("Nothing to show yet: open a session, then press Refresh.").foregroundStyle(.secondary)
                 }
             }
             HStack {
@@ -61,6 +57,7 @@ struct RegradeRulesView: View {
     }
 
     private func filtered(_ rows: [Row]) -> [Row] {
+        let rows = rows.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         guard !search.isEmpty else { return rows }
         return rows.filter { $0.name.localizedCaseInsensitiveContains(search) || $0.code.localizedCaseInsensitiveContains(search) }
     }
@@ -71,8 +68,9 @@ struct RegradeRulesView: View {
                                  set: { v in edit(row.id) { $0.counts = v } })) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.name)
-                    Text(row.code + (row.lastValue.isEmpty ? "" : " · now \(row.lastValue)")
-                         + (row.alsoFile.isEmpty ? "" : " · also settings file: " + row.alsoFile.joined(separator: ", ")))
+                    Text((row.code == "settings file" ? "read from the settings file" : "live · \(row.code)")
+                         + (row.alsoFile.isEmpty ? "" : " + settings file")
+                         + (row.lastValue.isEmpty ? "" : " · now \(row.lastValue)"))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
