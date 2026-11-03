@@ -202,7 +202,6 @@ struct ContentView: View {
         }
         .pickerStyle(.segmented)
         .frame(maxWidth: 360)
-        Text(quality.summary).font(.caption).monospacedDigit().foregroundStyle(.secondary)
     }
 
     // Re-grades waiting for a manual push

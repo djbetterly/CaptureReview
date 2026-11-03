@@ -60,6 +60,8 @@ actor Catalog {
     private var pathIndex: [String: String] = [:]          // relPath -> image_id (not deleted)
     private var sent: [String: String] = [:]               // "image_id#position" -> live text sent
     private var sentDisk: [String: [String]] = [:]
+    /// The session has been catalogued once (an empty session is not "first run" forever)
+    private var initialScanDone = false
     /// Events not yet written to the upload log (any caller's scan adds to it; the window drains it)
     private var undelivered: [CatalogEvent] = []         // "image_id#position" -> settings-file entries after the send
 
@@ -133,6 +135,9 @@ actor Catalog {
             loaded[img.id] = img
         }
         images = loaded
+        var scanned = false
+        Self.query(handle, "SELECT 1 FROM meta WHERE key='initial_scan'") { _ in scanned = true }
+        initialScanDone = scanned || !loaded.isEmpty
         var loadedSent: [String: String] = [:]
         Self.query(handle, "SELECT image_id, position, sent_live FROM variants WHERE sent_live IS NOT NULL") { s in
             loadedSent["\(Self.text(s, 0))#\(sqlite3_column_int(s, 1))"] = Self.text(s, 2)
@@ -232,7 +237,7 @@ actor Catalog {
     func scan() -> [CatalogEvent] {
         let files = listDisk()
         let now = Date().timeIntervalSince1970
-        let firstRun = images.isEmpty
+        let firstRun = !initialScanDone
         var events: [CatalogEvent] = []
         var seen = Set<String>()
         var dirty = Set<String>()
@@ -335,6 +340,9 @@ actor Catalog {
         }
 
         if firstRun {
+            initialScanDone = true
+            Self.run(db, "INSERT OR REPLACE INTO meta(key, value) VALUES('initial_scan', ?)",
+                     [.text(String(Date().timeIntervalSince1970))])
             events.append(.init(kind: .created, imageID: "", name: "Catalog",
                                 detail: "Catalog created: \(images.count) images (session \(sessionID.prefix(8)))"))
         }
