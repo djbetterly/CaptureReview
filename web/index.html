@@ -823,7 +823,7 @@
     await load();
   }
 
-  const QUALITY = { cellular: "Cellular", wifi: "Wi-Fi", wired: "Wired" };
+  const QUALITY = { cellular: "Small", wifi: "Medium", wired: "Large" };
   const kb = b => b ? Math.round(b / 1024) + " KB" : "?";
   function techInfo(v) {
     return (QUALITY[v.quality] || "unknown quality") + " · proof " + kb(v.proof_bytes) + " · thumb " + kb(v.thumb_bytes);

@@ -16,10 +16,18 @@ nonisolated enum UploadQuality: String, CaseIterable, Sendable, Identifiable {
     var id: String { rawValue }
 
     var label: String {
+        switch self {                       // what the client gets, not the network
+        case .cellular: "Small"
+        case .wifi:     "Medium"
+        case .wired:    "Large"
+        }
+    }
+    /// Shown when hovering the picker
+    var detail: String {
         switch self {
-        case .cellular: "Cellular"
-        case .wifi:     "Wi-Fi"
-        case .wired:    "Wired"
+        case .cellular: "Small: 1280 px, about 160 KB per proof. For slow or metered connections."
+        case .wifi:     "Medium: 2048 px, about 450 KB per proof."
+        case .wired:    "Large: 2048 px at higher JPEG quality, about 600 KB per proof."
         }
     }
     var proofMaxPixel: Int  { self == .cellular ? 1280 : 2048 }
@@ -72,9 +80,9 @@ final class QualitySettings {
         var label: String {
             switch self {
             case .auto:     "Auto"
-            case .cellular: "Cellular"
-            case .wifi:     "Wi-Fi"
-            case .wired:    "Wired"
+            case .cellular: "Small"
+            case .wifi:     "Medium"
+            case .wired:    "Large"
             }
         }
     }

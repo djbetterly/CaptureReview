@@ -27,7 +27,6 @@ struct ContentView: View {
     @State private var syncStatus = SyncStatus()
     @State private var quality = QualitySettings()
     @State private var log = UploadLog()
-    @State private var confirmReset = false
     @State private var busy = false
     @State private var auto = AutoPublisher()
     @State private var regradesWaiting = 0
@@ -197,9 +196,11 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var qualitySection: some View {
-        Picker("Upload quality", selection: $quality.mode) {
+        Picker("Proof size", selection: $quality.mode) {
             ForEach(QualitySettings.Mode.allCases) { Text($0.label).tag($0) }
         }
+        .help("Auto picks Small or Medium from the measured upload speed (now: \(quality.effective.label)).\n"
+              + UploadQuality.allCases.map(\.detail).joined(separator: "\n"))
         .pickerStyle(.segmented)
         .frame(maxWidth: 360)
     }
@@ -271,14 +272,8 @@ struct ContentView: View {
     private var galleryButtons: some View {
         HStack {
             Button("Open Gallery") { openGallery() }
-            Button("Upload Log") { log.showWindow() }
             SettingsLink { Text("Re-grade Rules…") }
                 .help("Choose which adjustments count as a re-grade, and how big a change must be")
-            Button("Settings Log") {
-                if let url = cosLog?.url { NSWorkspace.shared.open(url) }
-                else { status = "Choose a session first" }
-            }
-            .help("Everything Capture One writes to the settings (.cos) files, and every re-grade decision")
             Spacer()
             Toggle("Show test tools", isOn: $showTestTools)
                 .toggleStyle(.checkbox).controlSize(.small)
@@ -328,13 +323,12 @@ struct ContentView: View {
     @ViewBuilder private var testToolsSection: some View {
         if showTestTools {
             HStack {
-                Button("Reset Test Gallery…", role: .destructive) { confirmReset = true }
-                    .confirmationDialog("Delete all uploaded proofs, their database rows and ratings, and the local proof cache?",
-                                        isPresented: $confirmReset) {
-                        Button("Delete Everything", role: .destructive) { resetGallery() }
-                    } message: {
-                        Text("Only affects this gallery. RAW files and your Capture One session are not touched.")
-                    }
+                Button("Upload Log") { log.showWindow() }
+                Button("Settings Log") {
+                    if let url = cosLog?.url { NSWorkspace.shared.open(url) }
+                    else { status = "Choose a session first" }
+                }
+                .help("Everything Capture One writes to the settings (.cos) files, and every re-grade decision")
                 Button("Change Secret Key…") { forgetSecretKey() }
             }
             .controlSize(.small)
@@ -743,9 +737,4 @@ struct ContentView: View {
         }
     }
 
-    private func resetGallery() {
-        guard let uploader else { return }
-        status = "Resetting…"
-        Task { status = await uploader.resetGallery() }
-    }
 }
