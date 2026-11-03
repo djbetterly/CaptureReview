@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var selection = Set<String>()
     @State private var uploader: ProofUploader?
     @State private var ratingSync: RatingSync?
+    @State private var catalog: Catalog?
     @State private var status = "Choose a Capture One session folder"
     @State private var stats = UploadStats()
     @State private var syncStatus = SyncStatus()
@@ -88,6 +89,7 @@ struct ContentView: View {
             while !Task.isCancelled {
                 if let uploader { uploadedCounts = await uploader.uploadedCounts() }
                 refreshFolders()
+                if let catalog { logCatalog(await catalog.scan()) }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
@@ -351,13 +353,20 @@ struct ContentView: View {
 
         Task {
             await uploader?.stop()
+            // Session catalog: identity, history, what was sent. First run catalogues the session.
+            let cat = Catalog(sessionRoot: url)
+            if let cat { logCatalog(await cat.scan()) }
+            else { log.add(UploadLogEntry(time: Date(), name: "Catalog", kind: .failed, quality: "", width: 0, height: 0,
+                                          bytes: 0, seconds: 0, note: "Couldn't open the session catalog (.capturereview)")) }
+            catalog = cat
             let up = ProofUploader(supabaseURL: Config.supabaseURL,
                                    serviceKey: serviceKey,
                                    galleryID: Config.galleryID,
                                    sessionRoot: url,
                                    stats: stats,
                                    quality: quality,
-                                   log: log)
+                                   log: log,
+                                   catalog: cat)
             await up.start()
             uploader = up
             access = await up.galleryAccess()
@@ -372,6 +381,24 @@ struct ContentView: View {
             ratingSync = rs
 
             status = "Watching Output/_proof"
+        }
+    }
+
+    /// Writes catalog events (renames, moves, deletes, restores, new frames) to the upload log.
+    /// New frames aren't logged here: the publish lines already cover them.
+    private func logCatalog(_ events: [CatalogEvent]) {
+        for e in events where e.kind != .added {
+            let label: String
+            switch e.kind {
+            case .created:  label = "Catalog"
+            case .renamed:  label = "Renamed"
+            case .moved:    label = "Moved"
+            case .deleted:  label = "Deleted"
+            case .restored: label = "Restored"
+            case .added:    label = "Added"
+            }
+            log.add(UploadLogEntry(time: Date(), name: e.name, kind: .info, quality: "", width: 0, height: 0,
+                                   bytes: 0, seconds: 0, note: "\(label): \(e.detail)"))
         }
     }
 

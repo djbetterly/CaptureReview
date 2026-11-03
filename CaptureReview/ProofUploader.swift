@@ -166,6 +166,7 @@ actor ProofUploader {
         let variantID: String
         let position: Int
         let stamp: String              // live fingerprint at publish time
+        let liveText: String           // the readable adjustments behind it (recorded in the catalog)
         let displayName: String
         let oldPaths: [String]
     }
@@ -190,6 +191,8 @@ actor ProofUploader {
     private let stats: UploadStats
     private let quality: QualitySettings
     private let log: UploadLog
+    /// Session catalog: image identity and what each proof was sent with (re-grade baseline).
+    private let catalog: Catalog?
 
     /// "<RAW stem>_v<position>" -> what to do with that rendered master
     private var pending: [String: Pending] = [:]
@@ -228,7 +231,7 @@ actor ProofUploader {
     private var pollTask: Task<Void, Never>?
 
     init(supabaseURL: URL, serviceKey: String, galleryID: UUID, sessionRoot: URL,
-         stats: UploadStats, quality: QualitySettings, log: UploadLog) {
+         stats: UploadStats, quality: QualitySettings, log: UploadLog, catalog: Catalog? = nil) {
         client = SupabaseClient(
             supabaseURL: supabaseURL,
             supabaseKey: serviceKey,
@@ -238,6 +241,7 @@ actor ProofUploader {
         self.stats = stats
         self.quality = quality
         self.log = log
+        self.catalog = catalog
         captureRoot = sessionRoot.appendingPathComponent("Capture").standardizedFileURL
         proofDir = sessionRoot.appendingPathComponent("Output/_proof")
     }
@@ -403,6 +407,19 @@ actor ProofUploader {
                     if !v.liveText.isEmpty { sentLiveText[settingsKey] = v.liveText }
                     plan.skipped += 1
                     continue
+                } else if !v.live.isEmpty, oldStamp.live != v.live,
+                          disk.isEmpty || oldStamp.disk.isEmpty || oldStamp.disk == disk,
+                          await !isVisibleChange(relPath: relPath, position: v.position, key: settingsKey, now: v.liveText) {
+                    // Adjustments changed, but not enough to see on a proof (rounding noise, a tiny
+                    // nudge). Remember the new fingerprint locally so it isn't re-checked every pass;
+                    // the baseline stays what was SENT, so small changes that add up still count.
+                    cacheStampLocally(relPath: relPath, position: v.position,
+                                      stamp: Stamp(live: v.live, disk: oldStamp.disk).text)
+                    if waitingRegrades.remove(settingsKey) != nil {
+                        await addLog(name: label, kind: .info, note: "Re-grade below the visible threshold, not sent")
+                    }
+                    plan.skipped += 1
+                    continue
                 } else if !v.live.isEmpty, oldStamp.live != v.live {
                     // Capture One's live adjustments or crop changed: a re-grade.
                     // Auto-publish holds it for a manual Publish. Otherwise, with debounce,
@@ -453,7 +470,11 @@ actor ProofUploader {
                     // (A quick read has no live value, so it can't tell; leave the flag alone then.)
                     if !v.live.isEmpty {
                         waitingRegrades.remove(settingsKey)
-                        if !v.liveText.isEmpty { sentLiveText[settingsKey] = v.liveText }
+                        if !v.liveText.isEmpty {
+                            sentLiveText[settingsKey] = v.liveText
+                            await catalog?.adoptBaseline(captureRel: relPath, position: v.position,
+                                                         variantID: v.id, live: v.liveText)
+                        }
                     }
                     plan.skipped += 1
                     continue
@@ -472,6 +493,7 @@ actor ProofUploader {
             let display = (variantsPerRaw[v.rawPath] ?? 1) > 1 ? "\(stem) (v\(v.position))" : stem
             queued[key] = Pending(folder: folder, raw: raw, variantID: v.id, position: v.position,
                                   stamp: v.live,
+                                  liveText: v.liveText,
                                   displayName: display,
                                   oldPaths: [old?.storage_path, old?.thumb_path].compactMap { $0 })
             plan.variantIDs.append(v.id)
@@ -582,6 +604,25 @@ actor ProofUploader {
         let from = max(0, i - 60)
         let snip = { (c: [Character]) in String(c[min(from, c.count)..<min(i + 60, c.count)]) }
         return "at char \(i) of \(x.count)/\(y.count): …\(snip(x))… → …\(snip(y))…"
+    }
+
+    /// Whether the adjustments now differ VISIBLY from what the client's proof was made with.
+    /// No recorded baseline (sent before the catalog existed, or the text couldn't be read):
+    /// treat any change as visible, as before.
+    private func isVisibleChange(relPath: String, position: Int, key: String, now: String) async -> Bool {
+        guard !now.isEmpty else { return true }
+        let sent = await catalog?.sentLive(captureRel: relPath, position: position) ?? sentLiveText[key]
+        guard let sent, !sent.isEmpty else { return true }
+        return !VisualChange.significantChanges(sent: sent, now: now).isEmpty
+    }
+
+    /// Updates the cached fingerprint only (no database write: on a dead link, hundreds of
+    /// writes would each wait for a timeout).
+    private func cacheStampLocally(relPath: String, position: Int, stamp: String) {
+        guard let r = rowCache?["\(relPath)#\(position)"] else { return }
+        cacheRow("\(relPath)#\(position)", ExistingRow(
+            rel_path: r.rel_path, variant_id: r.variant_id, variant_position: r.variant_position,
+            source_stamp: stamp, quality: r.quality, storage_path: r.storage_path, thumb_path: r.thumb_path))
     }
 
     /// Updates the stored fingerprint without re-sending the image.
@@ -861,6 +902,10 @@ actor ProofUploader {
             source_stamp: row.source_stamp, quality: row.quality,
             storage_path: proofPath, thumb_path: thumbPath))
 
+        await catalog?.recordSent(captureRel: relPath, position: item.position, variantID: item.variantID,
+                                  live: item.liveText, proofPath: proofPath, thumbPath: thumbPath,
+                                  quality: profile.rawValue)
+
         // Remove the previous version's files (old grade or old quality)
         let stale = item.oldPaths.filter { $0 != thumbPath && $0 != proofPath }
         if !stale.isEmpty { _ = try? await bucket.remove(paths: stale) }
@@ -937,6 +982,7 @@ actor ProofUploader {
         diskCache = [:]
         retryAfter = [:]
         thumbDone = [:]
+        await catalog?.forgetSent()
         await MainActor.run {
             stats.total = 0; stats.uploaded = 0; stats.waitingOnDisk = 0
             stats.inFlight = 0; stats.retries = 0; stats.startedAt = nil
@@ -972,7 +1018,11 @@ nonisolated final class CosAdjustmentReader: NSObject, XMLParserDelegate {
         "CalculatedDehazeColor", "DehazeLevelHigh", "DehazeLevelLow",
         // Capture One fills these in on its own a few seconds after import (lens profile and
         // sharpening defaults), so every new frame looked "changed" at the next settings flush
-        "LensDiffractionCorrectionEnabled", "UsmMethod"
+        "LensDiffractionCorrectionEnabled", "UsmMethod",
+        // Bookkeeping that changes without the picture changing (seen on 2 Nov: renders bump the
+        // counter; applying a style rewrites its name/source even when the values come out the same,
+        // and the values themselves are tracked separately)
+        "HighResProcessCounter", "Name", "StyleSource", "StyleModified"
     ]
     /// Rating, color tag and metadata fields. (Color_Tag_Index was missing: tagging an image
     /// in Capture One flagged it as re-graded.)
@@ -981,7 +1031,7 @@ nonisolated final class CosAdjustmentReader: NSObject, XMLParserDelegate {
         "Color_Tag", "Rating"
     ]
     /// Changes whenever the ignore list changes, so old fingerprints aren't compared with new ones.
-    static let digestVersion = "v3-"
+    static let digestVersion = "v4-"
 
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                 qualifiedName: String?, attributes: [String: String] = [:]) {
