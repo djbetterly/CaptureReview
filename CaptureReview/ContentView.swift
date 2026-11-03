@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var cosLog: CosLog?
     @State private var cosMonitor: CosMonitor?
     @State private var galleryName = ""
+    // Folder menu: "Delete Images from Gallery…" waiting for confirmation
+    @State private var folderToDelete: String?
     // Manual publish progress, shown next to the buttons (step + seconds), nil when idle
     @State private var publishPhase: String?
     @State private var publishStarted = Date()
@@ -98,6 +100,17 @@ struct ContentView: View {
             NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil          // count on the Dock icon
         }
         .onAppear { connectAutoPublisher() }
+        .confirmationDialog(deleteTitle, isPresented: Binding(get: { folderToDelete != nil },
+                                                             set: { if !$0 { folderToDelete = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete from Gallery", role: .destructive) {
+                if let f = folderToDelete { deleteFolder(f) }
+                folderToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { folderToDelete = nil }
+        } message: {
+            Text("Removes this folder's proofs from the client gallery, including any ratings and color tags the client gave them. The folder is unticked so it isn't uploaded again. RAW files and the Capture One session are not touched.")
+        }
         .confirmationDialog("Is this the same job?", isPresented: $showCopyPrompt, titleVisibility: .visible) {
             Button("Same job (keep its gallery)") {
                 guard let url = copyURL, let cat = copyCatalog else { return }
@@ -161,7 +174,39 @@ struct ContentView: View {
             .toggleStyle(.checkbox)
             Spacer()
             folderBadge(folder)
+            folderMenu(folder)
         }
+    }
+
+    /// ⋮ per folder: publish just this folder, show it in Finder, delete it from the gallery
+    private func folderMenu(_ folder: String) -> some View {
+        Menu {
+            Button("Publish This Folder") { publishFolders([folder]) }
+                .disabled(busy || uploader == nil)
+            Button("Show in Finder") {
+                guard let sessionURL else { return }
+                let url = sessionURL.appendingPathComponent("Capture")
+                    .appendingPathComponent(folder, isDirectory: true)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            Divider()
+            Button("Delete Images from Gallery…", role: .destructive) { folderToDelete = folder }
+                .disabled(uploader == nil || (folderStatus[folder]?.galleryImages ?? 0) == 0)
+        } label: {
+            Image(systemName: "ellipsis").rotationEffect(.degrees(90))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Folder options")
+    }
+
+    private func deleteFolder(_ folder: String) {
+        guard let uploader else { return }
+        selection.remove(folder)                // untick first so nothing re-publishes it
+        auto.folders = selection
+        status = "Deleting \(folder.isEmpty ? "Capture (root)" : folder) from the gallery…"
+        Task { status = await uploader.deleteFolderFromGallery(folder) }
     }
 
     /// "120 shots · 118 in gallery" + In sync / what's missing / Not published
@@ -578,6 +623,22 @@ struct ContentView: View {
     // MARK: - Publish
 
     /// Button entry point: always a full check (reads every variant's live adjustments).
+    private var deleteTitle: String {
+        guard let f = folderToDelete else { return "" }
+        let n = folderStatus[f]?.galleryImages ?? 0
+        return "Delete \(n) image\(n == 1 ? "" : "s") of \(f.isEmpty ? "Capture (root)" : f) from the gallery?"
+    }
+
+    /// Publish just these folders (folder menu), same as the Publish button otherwise.
+    private func publishFolders(_ chosen: [String]) {
+        publishPhase = "Starting…"
+        publishStarted = Date()
+        Task {
+            status = await runPublish(chosen, .changed, scope: .full).summary
+            publishPhase = nil
+        }
+    }
+
     private func publish(_ mode: PublishMode) {
         let chosen = folders.filter { selection.contains($0) }
         publishPhase = "Starting…"                       // feedback the moment the button is clicked

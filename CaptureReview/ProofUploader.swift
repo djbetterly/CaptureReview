@@ -669,6 +669,73 @@ actor ProofUploader {
                     stem: (filename as NSString).deletingPathExtension, deleted: deleted)
     }
 
+    // MARK: - Delete a folder from the gallery
+
+    nonisolated private struct PathRow: Decodable, Sendable {
+        let storage_path: String?
+        let thumb_path: String?
+    }
+
+    /// Removes one Capture folder's images from the gallery: proof and thumbnail files, database
+    /// rows, and with them any client ratings. Anything still queued for that folder is dropped.
+    /// RAW files and the Capture One session are not touched. The caller unticks the folder so
+    /// it isn't published again.
+    func deleteFolderFromGallery(_ folder: String) async -> String {
+        // 1. Stop anything still on its way for this folder
+        let fm = FileManager.default
+        for (key, item) in pending where item.folder == folder {
+            pending[key] = nil
+            retryAfter[key] = nil
+            thumbDone[key] = nil
+            try? fm.removeItem(at: proofDir.appendingPathComponent(key + ".jpg"))
+        }
+        waitingRegrades = waitingRegrades.filter { key in
+            let rel = key.split(separator: "#").first.map(String.init) ?? key
+            let parts = rel.split(separator: "/")
+            return (parts.count > 1 ? String(parts[0]) : "") != folder
+        }
+
+        // 2. Files, then rows (marks go with the rows: ON DELETE CASCADE)
+        var removedFiles = 0
+        var count = 0
+        do {
+            var paths: [String] = []
+            var from = 0
+            while true {
+                let page: [PathRow] = try await client.from("images")
+                    .select("storage_path, thumb_path")
+                    .eq("gallery_id", value: galleryID.uuidString)
+                    .eq("folder_path", value: folder)
+                    .range(from: from, to: from + 999)
+                    .execute().value
+                count += page.count
+                for r in page { paths += [r.storage_path, r.thumb_path].compactMap { $0 } }
+                if page.count < 1000 { break }
+                from += 1000
+            }
+            let bucket = client.storage.from("proofs")
+            for start in stride(from: 0, to: paths.count, by: 500) {
+                let chunk = Array(paths[start..<min(start + 500, paths.count)])
+                _ = try? await bucket.remove(paths: chunk)
+                removedFiles += chunk.count
+            }
+            try await client.from("images")
+                .delete()
+                .eq("gallery_id", value: galleryID.uuidString)
+                .eq("folder_path", value: folder)
+                .execute()
+        } catch {
+            return "Couldn't delete \(folder.isEmpty ? "Capture" : folder) from the gallery: \(error.localizedDescription)"
+        }
+        rowCache = nil
+        rowCacheTime = .distantPast
+        localWrites = [:]
+        let name = folder.isEmpty ? "Capture (root)" : folder
+        await addLog(name: name, kind: .info,
+                     note: "Deleted from the gallery: \(count) image(s), \(removedFiles) file(s); folder unticked")
+        return "Deleted \(count) image\(count == 1 ? "" : "s") of \(name) from the gallery. The folder is unticked; tick it and publish to put it back."
+    }
+
     // MARK: - Client access (link + code)
 
     /// The gallery's name, link (slug) and access code.
@@ -1117,6 +1184,8 @@ actor ProofUploader {
                            quality: profile.rawValue, source_stamp: Stamp(live: stamp, disk: "").text,
                            proof_bytes: proof.data.count, thumb_bytes: thumb.data.count,
                            image_uid: item.imageUID)
+        // Folder deleted from the gallery while this was uploading: don't put it back
+        guard pending[key] != nil else { throw CancellationError() }
         try await client.from("images")
             .upsert(row, onConflict: "gallery_id,rel_path,variant_position")
             .execute()
