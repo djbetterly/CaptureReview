@@ -85,11 +85,14 @@ nonisolated final class CosMonitor: @unchecked Sendable {
         queue.async { [self] in
             let t0 = Date()
             var count = 0
+            var keys: [String: String] = [:]       // fills Settings > Re-grade rules without waiting for edits
             for file in settingsFiles() {
                 guard let snap = read(file) else { continue }
                 known[relative(file.path)] = snap
                 count += 1
+                if keys.count < 2000 { for v in snap.variants { for e in v where !e.hasPrefix("<") { keys[e] = "" } } }
             }
+            VisualChange.noteDisk(Array(keys.keys))
             log.write(source: "Monitor", file: root.lastPathComponent, event: "started",
                       detail: String(format: "read %d settings files in %.1f s; watching for changes", count,
                                      Date().timeIntervalSince(t0)))

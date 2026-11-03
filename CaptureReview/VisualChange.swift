@@ -63,7 +63,9 @@ nonisolated enum VisualChange {
             guard let bar = e.firstIndex(of: "|") else { continue }
             let rest = e[e.index(after: bar)...]
             guard let eq = rest.firstIndex(of: "=") else { continue }
-            seen["file:" + String(rest[..<eq])] = short(String(rest[rest.index(after: eq)...]))
+            let key = String(rest[..<eq])
+            if CosAdjustmentReader.isIgnored(key) { continue }      // ratings, metadata, counters: never re-grades
+            seen["file:" + key] = short(String(rest[rest.index(after: eq)...]))
         }
         if !seen.isEmpty { RegradeRules.shared.noteSeen(seen) }
     }
@@ -113,7 +115,8 @@ nonisolated enum VisualChange {
             if x == y { continue }
             let line = "\(key) \(short(x))→\(short(y))"
             // The user's rule for this setting (Settings > Re-grade rules): off = never a re-grade
-            let rule = RegradeRules.shared.rule(rulePrefix + String(key.split(separator: "/").last ?? Substring(key)))
+            let base = String(key.split(separator: "/").last ?? Substring(key))
+            let rule = rulePrefix == "file:" ? RegradeRules.shared.fileRule(base) : RegradeRules.shared.rule(rulePrefix + base)
             if rule?.counts == false { minor.append("[off] " + line); continue }
             if let t = rule?.threshold {
                 let nx = numbers(x), ny = numbers(y)

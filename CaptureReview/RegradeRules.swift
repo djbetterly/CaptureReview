@@ -70,6 +70,29 @@ nonisolated final class RegradeRules: @unchecked Sendable {
 
     func seenKeys() -> [String: String] { lock.withLock { seen } }
 
+    // MARK: - Live adjustment <-> settings-file key
+
+    private var nameIndex: [String: String]?        // normalized adjustment name -> live code
+
+    /// The live adjustment a settings-file key is the same setting as, matched by name
+    /// ("Exposure" <-> exposure / CVex). One checkbox then controls both checks.
+    func linkedLiveCode(forFileKey key: String) -> String? {
+        if lock.withLock({ nameIndex == nil }) {
+            var index: [String: String] = [:]
+            for (code, name) in CaptureOneDictionary.adjustmentNames() { index[Self.normalize(name)] = code }
+            lock.withLock { if nameIndex == nil { nameIndex = index } }
+        }
+        return lock.withLock { nameIndex?[Self.normalize(key)] }
+    }
+
+    /// The rule for a settings-file key: its own, else the linked live adjustment's.
+    func fileRule(_ key: String) -> RegradeRule? {
+        if let own = rule("file:" + key) { return own }
+        return linkedLiveCode(forFileKey: key).flatMap { rule("live:" + $0) }
+    }
+
+    static func normalize(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+
     private var flushScheduled = false
     private func flushSeenSoon() {
         let schedule: Bool = lock.withLock {

@@ -12,6 +12,7 @@ struct RegradeRulesView: View {
         let code: String
         let lastValue: String
         let defaultText: String
+        var alsoFile: [String] = []   // settings-file keys this live adjustment also controls
         var counts: Bool
         var threshold: String     // "" = built-in
     }
@@ -39,7 +40,7 @@ struct RegradeRulesView: View {
                     ForEach(filtered(live)) { row in rowView(row) }
                     if live.isEmpty { Text("Nothing read yet: open a session and publish once.").foregroundStyle(.secondary) }
                 }
-                Section("Settings file (layers, color editor and everything the live read can't see)") {
+                Section("Only in the settings file: edits Capture One's live values don't show (local layers, color editor, some curves)") {
                     ForEach(filtered(file)) { row in rowView(row) }
                     if file.isEmpty { Text("Nothing read yet.").foregroundStyle(.secondary) }
                 }
@@ -70,7 +71,8 @@ struct RegradeRulesView: View {
                                  set: { v in edit(row.id) { $0.counts = v } })) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.name)
-                    Text(row.code + (row.lastValue.isEmpty ? "" : " · now \(row.lastValue)"))
+                    Text(row.code + (row.lastValue.isEmpty ? "" : " · now \(row.lastValue)")
+                         + (row.alsoFile.isEmpty ? "" : " · also settings file: " + row.alsoFile.joined(separator: ", ")))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -106,7 +108,10 @@ struct RegradeRulesView: View {
         let names = CaptureOneDictionary.adjustmentNames()
         let seen = RegradeRules.shared.seenKeys()
         var l: [Row] = [], f: [Row] = []
-        for (key, value) in seen {
+        // Every adjustment Capture One's dictionary defines is listed, seen or not
+        var all = seen
+        for code in names.keys where all["live:" + code] == nil { all["live:" + code] = "" }
+        for (key, value) in all {
             let rule = RegradeRules.shared.rule(key) ?? RegradeRule()
             let threshold = rule.threshold.map { String($0) } ?? ""
             if key.hasPrefix("live:") {
@@ -122,6 +127,14 @@ struct RegradeRulesView: View {
                              counts: rule.counts, threshold: threshold))
             }
         }
+        // Settings-file keys that are the same setting as a live adjustment: shown on that row, not twice
+        var linked: [String: [String]] = [:]
+        f = f.filter { row in
+            guard let code = RegradeRules.shared.linkedLiveCode(forFileKey: row.name) else { return true }
+            linked["live:" + code, default: []].append(row.name)
+            return false
+        }
+        for i in l.indices { l[i].alsoFile = (linked[l[i].id] ?? []).sorted() }
         live = l.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         file = f.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         structureCounts = RegradeRules.shared.structureCounts
