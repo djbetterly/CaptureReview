@@ -130,7 +130,8 @@ nonisolated struct FolderSyncStatus: Sendable, Equatable {
     var notUploaded = 0        // on disk, not in the gallery
     var notOnDisk = 0          // in the gallery, no longer on disk (sync pending)
     var uploading = 0          // rendering / uploading now
-    var regradesWaiting = 0    // re-graded, held for Publish
+    var regradesWaiting = 0    // re-graded, held for Upload Re-grades
+    var hidden = false         // unpublished: the client can't see this folder
 
     var inSync: Bool { notUploaded == 0 && notOnDisk == 0 && uploading == 0 && regradesWaiting == 0 }
 
@@ -139,8 +140,8 @@ nonisolated struct FolderSyncStatus: Sendable, Equatable {
         var p: [String] = []
         let toUpload = max(notUploaded - uploading, 0)
         if uploading > 0 { p.append("\(uploading) uploading") }
-        if toUpload > 0 { p.append("\(toUpload) not in gallery") }
-        if notOnDisk > 0 { p.append("\(notOnDisk) to remove") }
+        if toUpload > 0 { p.append("\(toUpload) to upload") }
+        if notOnDisk > 0 { p.append("\(notOnDisk) to remove from server") }
         if regradesWaiting > 0 { p.append("\(regradesWaiting) re-grade\(regradesWaiting == 1 ? "" : "s") waiting") }
         return p.joined(separator: " · ")
     }
@@ -669,6 +670,66 @@ actor ProofUploader {
                     stem: (filename as NSString).deletingPathExtension, deleted: deleted)
     }
 
+    // MARK: - Folder visibility (Publish to Client / Unpublish)
+
+    nonisolated private struct VisibilityRow: Codable, Sendable {
+        let gallery_id: String
+        let folder_path: String
+        let hidden: Bool
+    }
+    private var hiddenFolders: [String: Bool] = [:]
+    private var visibilityLoaded = Date.distantPast
+
+    /// Folder -> hidden from the client. Folders without a row are published (the default).
+    /// Cached; re-read from the server every 30 s or when asked.
+    func folderVisibility(refresh: Bool = false) async -> [String: Bool] {
+        if refresh || Date().timeIntervalSince(visibilityLoaded) > 30 {
+            if let rows: [VisibilityRow] = try? await client.from("folder_visibility")
+                .select("gallery_id, folder_path, hidden")
+                .eq("gallery_id", value: galleryID.uuidString)
+                .execute().value {
+                hiddenFolders = Dictionary(rows.map { ($0.folder_path, $0.hidden) }, uniquingKeysWith: { a, _ in a })
+                visibilityLoaded = Date()
+            }
+        }
+        return hiddenFolders
+    }
+
+    /// Hide a folder from the client (it keeps uploading and syncing) or publish it (the client
+    /// sees all of it at once). Ratings are kept either way.
+    func setFolderHidden(_ folder: String, _ hidden: Bool) async -> Bool {
+        do {
+            try await client.from("folder_visibility")
+                .upsert(VisibilityRow(gallery_id: galleryID.uuidString, folder_path: folder, hidden: hidden),
+                        onConflict: "gallery_id,folder_path")
+                .execute()
+        } catch {
+            await addLog(name: folder.isEmpty ? "Capture (root)" : folder, kind: .failed,
+                         note: "Couldn't \(hidden ? "unpublish" : "publish") the folder: \(error.localizedDescription)")
+            return false
+        }
+        hiddenFolders[folder] = hidden
+        await addLog(name: folder.isEmpty ? "Capture (root)" : folder, kind: .info,
+                     note: hidden ? "Unpublished: hidden from the client (still uploading)" : "Published to the client")
+        return true
+    }
+
+    /// "New folders: Hidden": hide folders that have no setting yet and nothing uploaded
+    /// (folders the client can already see are never hidden by this).
+    func applyDefaultVisibility(folders: [String], hidden: Bool) async {
+        guard hidden, !folders.isEmpty else { return }
+        let vis = await folderVisibility(refresh: true)
+        let rows = (try? await existingRows()) ?? [:]
+        var withImages = Set<String>()
+        for row in rows.values where row.deleted_at == nil && !row.rel_path.hasPrefix(".") {
+            let parts = row.rel_path.split(separator: "/")
+            withImages.insert(parts.count > 1 ? String(parts[0]) : "")
+        }
+        for f in folders where vis[f] == nil && !withImages.contains(f) {
+            _ = await setFolderHidden(f, true)
+        }
+    }
+
     // MARK: - Delete a folder from the gallery
 
     nonisolated private struct PathRow: Decodable, Sendable {
@@ -733,7 +794,7 @@ actor ProofUploader {
         let name = folder.isEmpty ? "Capture (root)" : folder
         await addLog(name: name, kind: .info,
                      note: "Deleted from the gallery: \(count) image(s), \(removedFiles) file(s); folder unticked")
-        return "Deleted \(count) image\(count == 1 ? "" : "s") of \(name) from the gallery. The folder is unticked; tick it and publish to put it back."
+        return "Deleted \(count) image\(count == 1 ? "" : "s") of \(name) from the server. The folder is unticked; tick it and upload to put it back."
     }
 
     // MARK: - Client access (link + code)
@@ -786,15 +847,17 @@ actor ProofUploader {
             let parts = rel.split(separator: "/")
             regrades[parts.count > 1 ? String(parts[0]) : "", default: 0] += 1
         }
+        let hidden = await folderVisibility()
         var out: [String: FolderSyncStatus] = [:]
-        for folder in Set(shots.keys).union(galleryRaws.keys).union(uploading.keys).union(regrades.keys) {
+        for folder in Set(shots.keys).union(galleryRaws.keys).union(uploading.keys).union(regrades.keys).union(hidden.keys) {
             let onDisk = shots[folder] ?? [], inGallery = galleryRaws[folder] ?? []
             out[folder] = FolderSyncStatus(shots: onDisk.count, galleryFrames: inGallery.count,
                                            galleryImages: galleryImages[folder] ?? 0,
                                            notUploaded: onDisk.subtracting(inGallery).count,
                                            notOnDisk: inGallery.subtracting(onDisk).count,
                                            uploading: uploading[folder] ?? 0,
-                                           regradesWaiting: regrades[folder] ?? 0)
+                                           regradesWaiting: regrades[folder] ?? 0,
+                                           hidden: hidden[folder] ?? false)
         }
         return out
     }

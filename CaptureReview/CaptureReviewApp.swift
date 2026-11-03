@@ -15,7 +15,12 @@ struct CaptureReviewApp: App {
         }
         // Capture Review > Settings… (⌘,)
         Settings {
-            RegradeRulesView()
+            TabView {
+                GeneralSettingsView()
+                    .tabItem { Label("General", systemImage: "gearshape") }
+                RegradeRulesView()
+                    .tabItem { Label("Re-grade Rules", systemImage: "slider.horizontal.3") }
+            }
         }
     }
 }

@@ -171,7 +171,7 @@ final class AutoPublisher {
         if !batch.isEmpty {
             ready.forEach { changed[$0] = nil }
             batch.forEach { recheck[$0] = nil }
-            await run(Array(batch), .quick, label: "Publishing")
+            await run(Array(batch), .quick, label: "Uploading")
             return
         }
 

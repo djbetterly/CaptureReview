@@ -38,6 +38,8 @@ struct ContentView: View {
     @State private var access: GalleryAccess?                  // client link + code
     @State private var confirmNewCode = false
     @AppStorage("showTestTools") private var showTestTools = false
+    /// Settings > General: new folders start hidden from the client (publish when ready)
+    @AppStorage("newFoldersHidden") private var newFoldersHidden = false
 
     var body: some View {
         if serviceKey.isEmpty { keySetup } else { main }
@@ -103,13 +105,13 @@ struct ContentView: View {
         .confirmationDialog(deleteTitle, isPresented: Binding(get: { folderToDelete != nil },
                                                              set: { if !$0 { folderToDelete = nil } }),
                             titleVisibility: .visible) {
-            Button("Delete from Gallery", role: .destructive) {
+            Button("Delete from Server", role: .destructive) {
                 if let f = folderToDelete { deleteFolder(f) }
                 folderToDelete = nil
             }
             Button("Cancel", role: .cancel) { folderToDelete = nil }
         } message: {
-            Text("Removes this folder's proofs from the client gallery, including any ratings and color tags the client gave them. The folder is unticked so it isn't uploaded again. RAW files and the Capture One session are not touched.")
+            Text("Deletes this folder's proofs from the server, including any ratings and color tags the client gave them. To only hide it from the client, use Unpublish instead. The folder is unticked so it isn't uploaded again. RAW files and the Capture One session are not touched.")
         }
         .confirmationDialog("Is this the same job?", isPresented: $showCopyPrompt, titleVisibility: .visible) {
             Button("Same job (keep its gallery)") {
@@ -181,8 +183,15 @@ struct ContentView: View {
     /// ⋮ per folder: publish just this folder, show it in Finder, delete it from the gallery
     private func folderMenu(_ folder: String) -> some View {
         Menu {
-            Button("Publish This Folder") { publishFolders([folder]) }
+            Button("Upload This Folder") { publishFolders([folder]) }
                 .disabled(busy || uploader == nil)
+            if folderStatus[folder]?.hidden == true {
+                Button("Publish to Client") { setVisibility(folder, hidden: false) }
+                    .disabled(uploader == nil)
+            } else {
+                Button("Unpublish (Hide from Client)") { setVisibility(folder, hidden: true) }
+                    .disabled(uploader == nil)
+            }
             Button("Show in Finder") {
                 guard let sessionURL else { return }
                 let url = sessionURL.appendingPathComponent("Capture")
@@ -190,7 +199,7 @@ struct ContentView: View {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
             Divider()
-            Button("Delete Images from Gallery…", role: .destructive) { folderToDelete = folder }
+            Button("Delete from Server…", role: .destructive) { folderToDelete = folder }
                 .disabled(uploader == nil || (folderStatus[folder]?.galleryImages ?? 0) == 0)
         } label: {
             Image(systemName: "ellipsis").rotationEffect(.degrees(90))
@@ -201,32 +210,57 @@ struct ContentView: View {
         .help("Folder options")
     }
 
+    private func setVisibility(_ folder: String, hidden: Bool) {
+        guard let uploader else { return }
+        let name = folder.isEmpty ? "Capture (root)" : folder
+        Task {
+            if await uploader.setFolderHidden(folder, hidden) {
+                status = hidden ? "\(name) is hidden from the client. It keeps uploading; publish it when ready."
+                                : "\(name) is published: the client sees it now."
+                if let catalog { folderStatus = await uploader.folderStatus(shots: await catalog.capturedFiles()) }
+            } else {
+                status = "Couldn't change \(name)'s visibility (check the connection)."
+            }
+        }
+    }
+
     private func deleteFolder(_ folder: String) {
         guard let uploader else { return }
         selection.remove(folder)                // untick first so nothing re-publishes it
         auto.folders = selection
-        status = "Deleting \(folder.isEmpty ? "Capture (root)" : folder) from the gallery…"
+        status = "Deleting \(folder.isEmpty ? "Capture (root)" : folder) from the server…"
         Task { status = await uploader.deleteFolderFromGallery(folder) }
     }
 
-    /// "120 shots · 118 in gallery" + In sync / what's missing / Not published
+    /// "120 shots · 118 uploaded" + All uploaded / what's missing / Not uploaded + Published / Hidden
     @ViewBuilder private func folderBadge(_ folder: String) -> some View {
         let st = folderStatus[folder] ?? FolderSyncStatus()
         let ticked = selection.contains(folder)
         HStack(spacing: 8) {
             Text("\(st.shots) shot\(st.shots == 1 ? "" : "s")")
-            Text("\(st.galleryFrames) in gallery" + (st.galleryImages > st.galleryFrames
+            Text("\(st.galleryFrames) uploaded" + (st.galleryImages > st.galleryFrames
                                                      ? " (+\(st.galleryImages - st.galleryFrames) variants)" : ""))
             if !ticked && st.galleryImages == 0 {
-                Label("Not published", systemImage: "minus.circle")
+                Label("Not uploaded", systemImage: "minus.circle")
                     .foregroundStyle(.secondary)
             } else if st.inSync {
-                Label("In sync", systemImage: "checkmark.circle.fill")
+                Label("All uploaded", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
-                Label(st.problems.isEmpty ? "Out of sync" : st.problems, systemImage: "exclamationmark.circle.fill")
+                Label(st.problems.isEmpty ? "Not all uploaded" : st.problems, systemImage: "exclamationmark.circle.fill")
                     .foregroundStyle(.orange)
-                    .help(ticked ? "Out of sync: " + st.problems : "Not ticked, so new shots aren't published")
+                    .help(ticked ? st.problems : "Not ticked, so new shots aren't uploaded")
+            }
+            if ticked || st.galleryImages > 0 || st.hidden {
+                if st.hidden {
+                    Label("Hidden", systemImage: "eye.slash")
+                        .foregroundStyle(.secondary)
+                        .help("The client can't see this folder. It keeps uploading; use ⋮ > Publish to Client when ready.")
+                } else {
+                    Label("Published", systemImage: "eye")
+                        .foregroundStyle(.blue)
+                        .help("The client sees this folder")
+                }
             }
         }
         .font(.caption)
@@ -257,7 +291,7 @@ struct ContentView: View {
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
                 Text(regradeText).font(.callout)
                 Spacer()
-                Button("Publish Changes") { publish(.changed) }
+                Button("Upload Re-grades") { publish(.changed) }
                     .disabled(selection.isEmpty || busy)
             }
             .padding(8)
@@ -272,10 +306,10 @@ struct ContentView: View {
 
     private var actionsSection: some View {
         HStack {
-            Button(selection.count > 1 ? "Publish \(selection.count) Folders" : "Publish Folder") { publish(.changed) }
+            Button(selection.count > 1 ? "Upload \(selection.count) Folders" : "Upload") { publish(.changed) }
                 .keyboardShortcut(.defaultAction)
-                .help("Uploads new variants and ones you've re-graded since they were published")
-            Button("Republish All") { publish(.all) }
+                .help("Uploads new frames, and ones re-graded since they were uploaded")
+            Button("Re-upload All") { publish(.all) }
                 .help("Re-renders and re-uploads every variant in the selected folders")
             if let phase = publishPhase {
                 ProgressView().controlSize(.small).padding(.leading, 6)
@@ -294,7 +328,7 @@ struct ContentView: View {
 
     @ViewBuilder private var autoSection: some View {
         HStack(spacing: 12) {
-            Toggle("Auto-publish ticked folders", isOn: $auto.enabled)
+            Toggle("Auto-upload ticked folders", isOn: $auto.enabled)
                 .toggleStyle(.switch)
             Stepper("Settle \(Int(auto.settleSeconds)) s", value: $auto.settleSeconds, in: 0...15)
                 .help("Wait this long after the last new frame before rendering")
@@ -315,8 +349,8 @@ struct ContentView: View {
     private var galleryButtons: some View {
         HStack {
             Button("Open Gallery") { openGallery() }
-            SettingsLink { Text("Re-grade Rules…") }
-                .help("Choose which adjustments count as a re-grade, and how big a change must be")
+            SettingsLink { Text("Settings…") }
+                .help("New-folder visibility, and which adjustments count as a re-grade")
             Spacer()
             Toggle("Show test tools", isOn: $showTestTools)
                 .toggleStyle(.checkbox).controlSize(.small)
@@ -544,6 +578,7 @@ struct ContentView: View {
                                    cosLog: settingsLog)
             await up.start()
             uploader = up
+            await up.applyDefaultVisibility(folders: folders, hidden: newFoldersHidden)
             access = await up.galleryAccess()
             galleryName = access?.name ?? ""
 
@@ -600,6 +635,10 @@ struct ContentView: View {
         let removed = folders.filter { !now.contains($0) }
         folders = now
         if !removed.isEmpty { selection.subtract(removed) }
+        if !added.isEmpty, let uploader {
+            let hide = newFoldersHidden
+            Task { await uploader.applyDefaultVisibility(folders: added, hidden: hide) }
+        }
         if auto.enabled, !added.isEmpty {
             selection.formUnion(added)
             auto.folders = selection           // before the next tick, not after SwiftUI's onChange
@@ -626,7 +665,7 @@ struct ContentView: View {
     private var deleteTitle: String {
         guard let f = folderToDelete else { return "" }
         let n = folderStatus[f]?.galleryImages ?? 0
-        return "Delete \(n) image\(n == 1 ? "" : "s") of \(f.isEmpty ? "Capture (root)" : f) from the gallery?"
+        return "Delete \(n) image\(n == 1 ? "" : "s") of \(f.isEmpty ? "Capture (root)" : f) from the server?"
     }
 
     /// Publish just these folders (folder menu), same as the Publish button otherwise.
@@ -735,7 +774,7 @@ struct ContentView: View {
         var waiting = plan.notInCaptureOne > 0 ? " · \(plan.notInCaptureOne) not ready in Capture One yet" : ""
         if !unstable.isEmpty { waiting += " · Capture One was importing, checking again shortly" }
         if plan.variantIDs.isEmpty {
-            return PublishOutcome(summary: "Nothing to publish: \(plan.summary)\(waiting).", needsRecheck: recheck,
+            return PublishOutcome(summary: "Nothing to upload: \(plan.summary)\(waiting).", needsRecheck: recheck,
                                   regradesWaiting: plan.regradesWaiting)
         }
 
