@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capture Review</title>
+<style>
+  :root { --bg:#111; --card:#1c1c1c; --text:#eee; --dim:#888; --star:#f5b301; --accent:#3d8bfd; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px -apple-system, system-ui, sans-serif; }
+  /* Layout: folder tree on the left (like Capture One's library), gallery on the right */
+  .app { display:grid; grid-template-columns:240px 1fr; height:100vh; }
+  #sidebar { background:#181818; border-right:1px solid #262626; overflow-y:auto; padding:12px 8px; }
+  #main { overflow-y:auto; padding:16px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  #status { color:var(--dim); margin-bottom:16px; }
+  h2 { font-size:16px; margin:24px 0 10px; color:var(--dim); }
+  .section.hidden { display:none; }
+  /* Folder tree rows */
+  .tree-row { display:flex; align-items:center; gap:8px; width:100%; padding:6px 8px; border:0;
+              border-radius:6px; background:none; color:var(--text); font:inherit; font-size:14px;
+              text-align:left; cursor:pointer; }
+  .tree-row:hover { background:#232323; }
+  .tree-row.on { background:#3a3a3a; }
+  .tree-row .chev { width:10px; color:var(--dim); font-size:11px; }
+  .tree-row svg { flex:none; width:18px; height:14px; fill:#8a8a8a; }
+  .tree-row .label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tree-row .count { color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  .tree-children .tree-row { padding-left:30px; }
+  .tree-children.collapsed { display:none; }
+  /* Filters panel (like Capture One's): search, Rating, Color Tag, with counts */
+  #filters { margin-top:14px; border-top:1px solid #262626; padding-top:8px; }
+  #filters summary { cursor:pointer; padding:4px 8px; font-size:14px; font-weight:600; color:var(--dim); list-style:none; }
+  #filters summary::before { content:"\25BE  "; }
+  #filters:not([open]) summary::before { content:"\25B8  "; }
+  #search { width:calc(100% - 16px); margin:6px 8px 8px; padding:6px 10px; border-radius:6px;
+            border:1px solid #333; background:#111; color:var(--text); font:inherit; font-size:13px; }
+  .fhead { padding:8px 8px 4px; font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
+  .frow { display:flex; align-items:center; gap:8px; width:100%; padding:4px 8px; border:0; border-radius:6px;
+          background:none; color:var(--text); font:inherit; font-size:14px; text-align:left; cursor:pointer; }
+  .frow:hover { background:#232323; }
+  .frow .flabel { flex:1; }
+  .frow .fstars { color:#bbb; letter-spacing:1px; }
+  .frow .swatch { width:14px; height:14px; border-radius:3px; border:1px solid #555; flex:none; }
+  .frow .pill { min-width:34px; padding:1px 8px; border-radius:10px; background:#2b2b2b; color:var(--dim);
+                font-size:12px; text-align:right; font-variant-numeric:tabular-nums; }
+  .frow.on { background:#2a3550; }
+  .frow.on .pill { background:var(--accent); color:#fff; }
+  #f-clear { margin:8px; padding:4px 10px; border:1px solid #333; border-radius:6px; background:none;
+             color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
+  #f-clear[hidden] { display:none; }
+  .card.filtered, .section.empty { display:none; }
+
+  /* Access code screen */
+  #gate { position:fixed; inset:0; z-index:60; background:var(--bg); display:flex; align-items:center; justify-content:center; padding:16px; }
+  #gate[hidden] { display:none; }
+  #gate form { width:100%; max-width:340px; text-align:center; }
+  #gate h2 { color:var(--text); font-size:20px; margin:0 0 8px; }
+  #gate p { color:var(--dim); font-size:14px; margin:0 0 16px; }
+  #gate input { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #333; background:#1a1a1a;
+                color:var(--text); font:inherit; font-size:18px; text-align:center; letter-spacing:.12em; text-transform:uppercase; }
+  #gate button { margin-top:12px; width:100%; padding:10px; border:0; border-radius:8px; background:var(--accent);
+                 color:#fff; font:inherit; font-size:15px; cursor:pointer; }
+
+  /* Large view (lightbox) */
+  #lb { position:fixed; inset:0; z-index:50; background:#0b0b0b; display:grid;
+        grid-template-rows:1fr auto; }
+  #lb[hidden] { display:none; }
+  #lb-stage { position:relative; display:flex; align-items:center; justify-content:center; min-height:0; padding:16px 64px 0; }
+  #lb-img { max-width:100%; max-height:100%; object-fit:contain; user-select:none; -webkit-user-drag:none; }
+  .lb-btn { position:absolute; border:0; background:rgba(40,40,40,.7); color:#eee; cursor:pointer;
+            border-radius:50%; width:44px; height:44px; font-size:26px; line-height:44px; padding:0; }
+  .lb-btn:hover { background:rgba(70,70,70,.9); }
+  .lb-btn[disabled] { opacity:.2; cursor:default; }
+  #lb-close { top:12px; right:12px; font-size:22px; }
+  #lb-prev { left:12px; top:50%; transform:translateY(-50%); }
+  #lb-next { right:12px; top:50%; transform:translateY(-50%); }
+  #lb-bar { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:10px 22px; padding:12px 16px 16px; }
+  #lb-name { font-size:14px; user-select:text; overflow-wrap:anywhere; }
+  #lb-count { color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  #lb .stars button { font-size:24px; }
+  #lb .tags button { width:18px; height:18px; }
+  #lb .variants { padding:0; }
+  body.lb-open #main { overflow:hidden; }
+  @media (max-width:700px) {
+    #lb-stage { padding:8px 0 0; }
+    #lb-prev, #lb-next { top:auto; bottom:8px; transform:none; }
+  }
+
+  /* Phones: the tree becomes a scrollable strip across the top */
+  @media (max-width:700px) {
+    .app { grid-template-columns:1fr; grid-template-rows:auto 1fr; }
+    #sidebar { border-right:0; border-bottom:1px solid #262626; padding:6px; max-height:45vh; overflow-y:auto; }
+    #folders { display:flex; overflow-x:auto; white-space:nowrap; }
+    #folders > div, .tree-children { display:flex !important; }
+    #filters { margin-top:6px; padding-top:4px; }
+    .tree-row, .tree-children .tree-row { width:auto; padding:6px 10px; }
+    .tree-row .chev { display:none; }
+  }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
+  /* Off-screen cards skip layout and paint: keeps big galleries smooth */
+  .card { background:var(--card); border-radius:8px; overflow:hidden;
+          content-visibility:auto; contain-intrinsic-size:auto 250px; }
+  .card img { width:100%; aspect-ratio:3/2; object-fit:contain; background:#000; display:block; cursor:zoom-in; }
+  /* Full file name on its own line: clients refer to frames by name, so it is never cut off */
+  .name { display:block; padding:6px 8px 0; font-size:12px; color:var(--text); opacity:.75;
+          overflow-wrap:anywhere; line-height:1.3; user-select:text; }
+  .meta { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; padding:2px 8px 8px; gap:4px 6px; }
+  .stars { white-space:nowrap; }
+  .stars button { background:none; border:0; padding:2px; font-size:20px; line-height:1;
+                  color:#444; cursor:pointer; }
+  .stars button.on { color:var(--star); }
+  /* Color tags (same seven as Capture One) */
+  .tags { display:flex; gap:6px; padding:2px 0; }
+  .tags button { width:14px; height:14px; border-radius:50%; border:2px solid transparent;
+                 padding:0; cursor:pointer; opacity:.35; }
+  .tags button.on { opacity:1; border-color:#fff; }
+  .card.tagged { box-shadow:inset 0 -3px 0 var(--tag); }
+  .variants { display:flex; gap:4px; padding:0 8px 8px; }
+  .variants button { background:#2a2a2a; color:var(--dim); border:0; border-radius:4px;
+                     padding:2px 8px; font-size:12px; cursor:pointer; }
+  .variants button.on { background:var(--accent); color:#fff; }
+  .variants button .dot { color:var(--star); }
+  /* Tech info: press "i" to show/hide */
+  .info { display:none; padding:0 8px 8px; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  body.show-info .info { display:block; }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav id="sidebar" aria-label="Folders and filters">
+    <div id="folders"></div>
+    <details id="filters">
+      <summary>Filters</summary>
+      <input id="search" type="search" placeholder="Search file names" autocomplete="off">
+      <div class="fhead">Rating</div><div id="f-rating"></div>
+      <div class="fhead">Color Tag</div><div id="f-color"></div>
+      <button id="f-clear" hidden>Clear filters</button>
+    </details>
+  </nav>
+  <main id="main">
+    <h1>Capture Review</h1>
+    <div id="status">Loading…</div>
+    <div id="gallery"></div>
+  </main>
+</div>
+
+<div id="gate" hidden>
+  <form id="gate-form">
+    <h2>Capture Review</h2>
+    <p id="gate-msg">Enter the access code you were given.</p>
+    <input id="gate-code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" aria-label="Access code">
+    <button type="submit">Open gallery</button>
+  </form>
+</div>
+
+<div id="lb" hidden role="dialog" aria-label="Image viewer">
+  <div id="lb-stage">
+    <img id="lb-img" alt="">
+    <button id="lb-close" class="lb-btn" title="Close (Esc)">&#x2715;</button>
+    <button id="lb-prev" class="lb-btn" title="Previous (left arrow)">&#x2039;</button>
+    <button id="lb-next" class="lb-btn" title="Next (right arrow)">&#x203A;</button>
+  </div>
+  <div id="lb-bar">
+    <span id="lb-name"></span>
+    <span id="lb-variants" class="variants"></span>
+    <span id="lb-tags" class="tags"></span>
+    <span id="lb-stars" class="stars"></span>
+    <span id="lb-count"></span>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4"></script>
+<script src="config.js"></script>
+<script>
+  // --- Settings live in config.js (next to this page), so updating the page never touches them ---
+  const CFG = window.CAPTURE_REVIEW_CONFIG || {};
+  const SUPABASE_URL = CFG.supabaseURL;
+  const SUPABASE_KEY = CFG.publishableKey;            // publishable key ONLY, never the secret key
+  const REVIEWER = "client";                          // the shared mark row (one per image)
+
+  // Capture One's color tags, in Capture One's order
+  const TAGS = [
+    ["red", "#e5484d"], ["orange", "#f76b15"], ["yellow", "#ffc53d"], ["green", "#46a758"],
+    ["blue", "#3e63dd"], ["pink", "#d6409f"], ["purple", "#8e4ec6"]
+  ];
+  const TAG_COLOR = Object.fromEntries(TAGS);
+
+  if (!window.CAPTURE_REVIEW_CONFIG || !SUPABASE_URL || !SUPABASE_KEY
+      || /YOUR-|PASTE-/.test(SUPABASE_URL + SUPABASE_KEY)) {
+    document.getElementById("status").textContent = !window.CAPTURE_REVIEW_CONFIG
+      ? "Gallery not configured: config.js didn't load (missing from the upload, or not saved as plain text)."
+      : "Gallery not configured: config.js still has placeholder values (YOUR-… / PASTE-…).";
+    throw new Error("config.js missing or incomplete");
+  }
+  // Gallery link (?g=<slug>) + access code. The code comes from the link's #code=… (your own
+  // "Open Gallery" link) or what the client typed last time, and is checked by the server on every call.
+  const gallerySlug = new URLSearchParams(location.search).get("g") || "";
+  const CODE_KEY = "cr-code-" + gallerySlug;
+  let accessCode = "";
+  try { accessCode = new URLSearchParams(location.hash.slice(1)).get("code") || localStorage.getItem(CODE_KEY) || ""; } catch {}
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  const statusEl = document.getElementById("status");
+  const galleryEl = document.getElementById("gallery");
+  const publicUrl = path => path ? sb.storage.from("proofs").getPublicUrl(path).data.publicUrl : "";
+
+  // image id -> function(rating, colorTag) that updates that card (used by live updates)
+  const liveUpdate = new Map();
+  // rel_path -> { variants, el }   and   folder_path ("" = Capture root) -> { wrap, h, grid, count }
+  const frames = new Map();
+  const folderSections = new Map();
+  const sidebarEl = document.getElementById("sidebar");
+  const folderLabel = f => f === "" ? "Capture (root)" : f;
+  const naturalSort = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+  // Which folder is shown: null = all. Kept in the address (#folder=Shot_04) so refresh/links keep it.
+  let currentFolder = null;
+  let treeOpen = true;
+  // Active filters. Within a group, ticked values are OR; Rating AND Color Tag must match the same variant.
+  const filters = { ratings: new Set(), colors: new Set(), q: "" };
+  try {
+    const h = new URLSearchParams(location.hash.slice(1));
+    if (h.get("folder") !== null) currentFolder = h.get("folder");
+    (h.get("r") || "").split(",").filter(Boolean).forEach(r => filters.ratings.add(Number(r)));
+    (h.get("c") || "").split(",").filter(Boolean).forEach(c => filters.colors.add(c));
+    filters.q = h.get("q") || "";
+  } catch {}
+  const foldersEl = document.getElementById("folders");
+  const filtersEl = document.getElementById("filters");
+  if (window.innerWidth > 700 || filters.ratings.size || filters.colors.size || filters.q) filtersEl.open = true;
+  // Every read and write goes through the gallery_* database functions, which check link + code
+  async function rpc(fn, args = {}) {
+    const { data, error } = await sb.rpc(fn, { p_slug: gallerySlug, p_code: accessCode, ...args });
+    if (error) throw error;
+    return data;
+  }
+
+  // Load every variant, 1000 rows per request
+  async function fetchAll() {
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const data = (await rpc("gallery_images", { p_offset: from, p_limit: 1000 })) || [];
+      rows.push(...data);
+      if (data.length < 1000) break;
+    }
+    return rows;
+  }
+
+  async function load() {
+    let rows;
+    try { rows = await fetchAll(); }
+    catch (e) { statusEl.textContent = "Error: " + e.message; return; }
+
+    // Group variants of the same RAW, then lay frames out by folder (rows arrive sorted)
+    galleryEl.innerHTML = "";
+    liveUpdate.clear(); frames.clear(); folderSections.clear();
+    const grouped = new Map();
+    for (const r of rows) {
+      if (!grouped.has(r.rel_path)) grouped.set(r.rel_path, []);
+      grouped.get(r.rel_path).push(r);
+    }
+    for (const variants of grouped.values()) addFrame(variants);
+    updateTotals();
+  }
+
+  // Folder heading + grid, created the first time a folder has a frame (kept in name order)
+  function sectionFor(folder) {
+    if (!folderSections.has(folder)) {
+      const wrap = document.createElement("section");
+      wrap.className = "section";
+      const h = document.createElement("h2");
+      const grid = document.createElement("div");
+      grid.className = "grid";
+      wrap.append(h, grid);
+      const after = [...folderSections.keys()].filter(k => naturalSort(k, folder) > 0).sort(naturalSort)[0];
+      if (after !== undefined) galleryEl.insertBefore(wrap, folderSections.get(after).wrap);
+      else galleryEl.appendChild(wrap);
+      folderSections.set(folder, { wrap, h, grid, count: 0 });
+      applyFolderFilter();
+    }
+    return folderSections.get(folder);
+  }
+
+  function addFrame(variants) {
+    const folder = variants[0].folder_path || "";
+    const section = sectionFor(folder);
+    const el = frameCard(variants);
+    section.grid.appendChild(el);
+    section.count += 1;
+    section.h.textContent = folderLabel(folder) + " (" + section.count + ")";
+    frames.set(variants[0].rel_path, { variants, el });
+  }
+
+  // --- Filters ---
+  const searchEl = document.getElementById("search");
+  const clearEl = document.getElementById("f-clear");
+  const ratingRows = new Map(), colorRows = new Map();
+  const filtersActive = () => filters.ratings.size > 0 || filters.colors.size > 0 || filters.q !== "";
+
+  function filterRow(content, onClick) {
+    const b = document.createElement("button");
+    b.className = "frow";
+    b.innerHTML = content + '<span class="pill">0</span>';
+    b.onclick = onClick;
+    return b;
+  }
+  function buildFilterPanel() {
+    const rEl = document.getElementById("f-rating"), cEl = document.getElementById("f-color");
+    for (let r = 0; r <= 5; r++) {
+      const label = r === 0 ? '<span class="flabel">None</span>'
+                            : `<span class="flabel fstars">${"\u2605".repeat(r)}</span>`;
+      const row = filterRow(label, () => toggle(filters.ratings, r));
+      ratingRows.set(r, row); rEl.appendChild(row);
+    }
+    for (const [name, hex] of [["none", ""], ...TAGS]) {
+      const sw = `<span class="swatch" style="background:${hex || "transparent"}"></span>`;
+      const row = filterRow(sw + `<span class="flabel">${name[0].toUpperCase() + name.slice(1)}</span>`,
+                            () => toggle(filters.colors, name));
+      colorRows.set(name, row); cEl.appendChild(row);
+    }
+    searchEl.value = filters.q;
+    searchEl.oninput = () => { filters.q = searchEl.value.trim(); saveAddress(); refreshFilters(); };
+    clearEl.onclick = () => {
+      filters.ratings.clear(); filters.colors.clear(); filters.q = ""; searchEl.value = "";
+      saveAddress(); refreshFilters();
+    };
+  }
+  function toggle(set, value) {
+    set.has(value) ? set.delete(value) : set.add(value);
+    saveAddress(); refreshFilters();
+  }
+
+  // A frame shows if ANY of its variants passes all active filters
+  function frameMatches(frame) {
+    const q = filters.q.toLowerCase();
+    if (q && !frame.variants.some(v => (v.display_name || v.filename || "").toLowerCase().includes(q)
+                                      || (v.filename || "").toLowerCase().includes(q))) return false;
+    if (!filters.ratings.size && !filters.colors.size) return true;
+    return frame.el.getMarks().some(m =>
+      (!filters.ratings.size || filters.ratings.has(m.rating)) &&
+      (!filters.colors.size || filters.colors.has(m.color)));
+  }
+
+  function refreshFilters() {
+    const scopeFolder = currentFolder !== null && folderSections.has(currentFolder) ? currentFolder : null;
+    const rCount = new Array(6).fill(0), cCount = {};
+    const shown = new Map();                         // folder -> visible frames
+    let inScope = 0, visible = 0;
+    const q = filters.q.toLowerCase();
+    for (const frame of frames.values()) {
+      const folder = frame.variants[0].folder_path || "";
+      const ok = frameMatches(frame);
+      frame.el.classList.toggle("filtered", !ok);
+      if (ok) shown.set(folder, (shown.get(folder) || 0) + 1);
+      if (scopeFolder !== null && folder !== scopeFolder) continue;
+      inScope++; if (ok) visible++;
+      // Counts (like Capture One): images in the current folder that match the search
+      if (q && !frame.variants.some(v => (v.display_name || v.filename || "").toLowerCase().includes(q))) continue;
+      for (const m of frame.el.getMarks()) {
+        rCount[m.rating] = (rCount[m.rating] || 0) + 1;
+        cCount[m.color] = (cCount[m.color] || 0) + 1;
+      }
+    }
+    ratingRows.forEach((row, r) => { row.querySelector(".pill").textContent = rCount[r] || 0;
+                                     row.classList.toggle("on", filters.ratings.has(r)); });
+    colorRows.forEach((row, c) => { row.querySelector(".pill").textContent = cCount[c] || 0;
+                                    row.classList.toggle("on", filters.colors.has(c)); });
+    const active = filtersActive();
+    for (const [folder, s] of folderSections) {
+      const n = shown.get(folder) || 0;
+      s.wrap.classList.toggle("empty", active && n === 0);
+      s.h.textContent = folderLabel(folder) + (active ? ` (${n} of ${s.count})` : ` (${s.count})`);
+    }
+    clearEl.hidden = !active;
+    if (active) statusEl.textContent = `Showing ${visible} of ${inScope} frames`;
+    else statusEl.textContent = baseStatus;
+  }
+  let filterTimer = null;
+  function scheduleFilterRefresh() {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(refreshFilters, 60);
+  }
+
+  // Folder + filters live in the address, so refresh and shared links keep them
+  function saveAddress() {
+    const h = new URLSearchParams();
+    if (currentFolder !== null) h.set("folder", currentFolder);
+    if (filters.ratings.size) h.set("r", [...filters.ratings].sort().join(","));
+    if (filters.colors.size) h.set("c", [...filters.colors].join(","));
+    if (filters.q) h.set("q", filters.q);
+    const tail = h.toString();
+    try { history.replaceState(null, "", tail ? "#" + tail : location.pathname + location.search); } catch {}
+  }
+  buildFilterPanel();
+
+  // --- Large view (lightbox) ---
+  // Opens in the page (no new tab). Arrows/keys move through the frames currently visible,
+  // in grid order, so it follows the selected folder and filters. 1-5 rate, 0 clears, Esc closes.
+  const lb = document.getElementById("lb");
+  const lbImg = document.getElementById("lb-img");
+  const lbName = document.getElementById("lb-name");
+  const lbCount = document.getElementById("lb-count");
+  const lbStars = document.getElementById("lb-stars");
+  const lbTags = document.getElementById("lb-tags");
+  const lbVariants = document.getElementById("lb-variants");
+  const lbPrev = document.getElementById("lb-prev"), lbNext = document.getElementById("lb-next");
+  let lbRel = null;            // rel_path of the frame on screen
+  let lbToken = 0;             // ignores late-loading images after you've moved on
+  let lbIndex = 0;             // position in the visible list (kept if the frame drops out of a filter)
+
+  for (let n = 1; n <= 5; n++) {
+    const b = document.createElement("button");
+    b.textContent = "\u2605"; b.title = n + " star" + (n > 1 ? "s" : "") + " (" + n + ")";
+    b.onclick = () => lbCard()?.api.rate(n);
+    lbStars.appendChild(b);
+  }
+  for (const [name, hex] of TAGS) {
+    const b = document.createElement("button");
+    b.dataset.tag = name; b.title = name[0].toUpperCase() + name.slice(1); b.style.background = hex;
+    b.onclick = () => lbCard()?.api.tag(name);
+    lbTags.appendChild(b);
+  }
+
+  const lbCard = () => lbRel !== null ? frames.get(lbRel)?.el : null;
+  const visibleCards = () => [...galleryEl.querySelectorAll(".section:not(.hidden):not(.empty) .card:not(.filtered)")];
+
+  function openLightbox(relPath) {
+    lbRel = relPath;
+    lb.hidden = false;
+    document.body.classList.add("lb-open");
+    drawLightbox(true);
+  }
+  function closeLightbox() {
+    const card = lbCard();
+    lb.hidden = true; lbRel = null;
+    document.body.classList.remove("lb-open");
+    lbImg.removeAttribute("src");
+    card?.scrollIntoView({ block: "nearest" });              // back where you were in the grid
+  }
+  function step(dir) {
+    const cards = visibleCards(), card = lbCard();
+    const i = cards.indexOf(card);
+    // If you just rated it out of the current filter, carry on from where it was
+    const next = i >= 0 ? cards[i + dir] : cards[dir > 0 ? lbIndex : lbIndex - 1];
+    if (!next) return;
+    lbRel = [...frames].find(([, f]) => f.el === next)?.[0] ?? lbRel;
+    drawLightbox(true);
+  }
+  // Called by a card whenever its rating/tag/variant changes (also from live updates)
+  function lightboxChanged(cardEl) {
+    if (!lb.hidden && cardEl === lbCard()) drawLightbox(false);
+  }
+
+  function drawLightbox(newImage) {
+    const card = lbCard();
+    if (!card) { closeLightbox(); return; }
+    const { variants, current } = card.api;
+    const v = variants[current];
+    const m = card.api.mark();
+    lbName.textContent = v.display_name || v.filename;
+    lbName.title = v.filename;
+    lbStars.querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", i < m.rating));
+    lbTags.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.tag === m.color));
+    lbVariants.innerHTML = "";
+    if (variants.length > 1) variants.forEach((x, i) => {
+      const t = document.createElement("button");
+      t.textContent = "v" + x.variant_position;
+      t.classList.toggle("on", i === current);
+      t.onclick = () => { card.api.show(i); drawLightbox(true); };
+      lbVariants.appendChild(t);
+    });
+    const cards = visibleCards(), i = cards.indexOf(card);
+    if (i >= 0) lbIndex = i;
+    lbCount.textContent = i >= 0 ? `${i + 1} / ${cards.length}` : "not in current filter";
+    lbPrev.disabled = (i >= 0 ? i : lbIndex) <= 0;
+    lbNext.disabled = i >= 0 ? i >= cards.length - 1 : lbIndex >= cards.length;
+
+    if (!newImage && lbImg.dataset.path === v.storage_path) return;
+    // Thumbnail straight away (already cached by the grid), full proof as soon as it arrives
+    const token = ++lbToken;
+    lbImg.dataset.path = v.storage_path;
+    lbImg.src = publicUrl(v.thumb_path || v.storage_path);
+    const full = new Image();
+    full.onload = () => { if (token === lbToken) lbImg.src = full.src; };
+    full.src = publicUrl(v.storage_path);
+    // Preload the neighbours so arrowing through is instant
+    [cards[i - 1], cards[i + 1]].forEach(c => {
+      if (!c) return;
+      const nv = c.api.variants[c.api.current];
+      new Image().src = publicUrl(nv.storage_path);
+    });
+  }
+
+  document.getElementById("lb-close").onclick = closeLightbox;
+  lbPrev.onclick = () => step(-1);
+  lbNext.onclick = () => step(1);
+  // Click the dark area around the image to close
+  document.getElementById("lb-stage").addEventListener("click", e => { if (e.target.id === "lb-stage") closeLightbox(); });
+  document.addEventListener("keydown", e => {
+    if (lb.hidden || e.target.matches("input, textarea")) return;
+    if (e.key === "Escape") closeLightbox();
+    else if (e.key === "ArrowLeft") step(-1);
+    else if (e.key === "ArrowRight") step(1);
+    else if (/^[0-5]$/.test(e.key)) {
+      const card = lbCard(); if (!card) return;
+      const n = Number(e.key);
+      if (n === 0) { if (card.api.mark().rating) card.api.rate(card.api.mark().rating); }   // clear
+      else card.api.rate(n);
+    } else return;
+    e.preventDefault();
+  });
+  // Swipe left/right on phones
+  let touchX = null;
+  lb.addEventListener("touchstart", e => { touchX = e.touches[0].clientX; }, { passive: true });
+  lb.addEventListener("touchend", e => {
+    if (touchX === null) return;
+    const dx = e.changedTouches[0].clientX - touchX; touchX = null;
+    if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1);
+  });
+
+  // --- Folder tree ---
+  const FOLDER_ICON = '<svg viewBox="0 0 18 14" aria-hidden="true"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h4l1.6 1.8h7.4A1.5 1.5 0 0 1 17 4.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 1 11.5z"/></svg>';
+
+  function treeRow(label, count, selected, onClick, chevron) {
+    const b = document.createElement("button");
+    b.className = "tree-row" + (selected ? " on" : "");
+    b.innerHTML = `<span class="chev">${chevron || ""}</span>${FOLDER_ICON}<span class="label"></span><span class="count"></span>`;
+    b.querySelector(".label").textContent = label;
+    b.querySelector(".count").textContent = count;
+    b.title = label;
+    b.onclick = onClick;
+    return b;
+  }
+
+  function renderSidebar() {
+    foldersEl.innerHTML = "";
+    const root = document.createElement("div");
+    const total = [...folderSections.values()].reduce((a, s) => a + s.count, 0);
+    // "Capture" = the whole gallery; its chevron folds the list
+    root.appendChild(treeRow("Capture", total, currentFolder === null, () => {
+      if (currentFolder === null) { treeOpen = !treeOpen; renderSidebar(); return; }
+      selectFolder(null);
+    }, treeOpen ? "\u25BE" : "\u25B8"));
+    const kids = document.createElement("div");
+    kids.className = "tree-children" + (treeOpen ? "" : " collapsed");
+    for (const folder of [...folderSections.keys()].sort(naturalSort)) {
+      kids.appendChild(treeRow(folderLabel(folder), folderSections.get(folder).count,
+                               currentFolder === folder, () => selectFolder(folder)));
+    }
+    root.appendChild(kids);
+    foldersEl.appendChild(root);
+    // Keep the selected folder visible (matters on phones, where the tree scrolls sideways)
+    sidebarEl.querySelector(".tree-row.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  function selectFolder(folder) {
+    currentFolder = folder;
+    saveAddress();
+    applyFolderFilter();
+    renderSidebar();
+    refreshFilters();
+    document.getElementById("main").scrollTop = 0;
+  }
+
+  function applyFolderFilter() {
+    // A remembered folder that doesn't exist (yet) shows everything
+    const show = currentFolder !== null && folderSections.has(currentFolder) ? currentFolder : null;
+    for (const [folder, s] of folderSections) s.wrap.classList.toggle("hidden", show !== null && folder !== show);
+  }
+
+  function updateTotals() {
+    applyFolderFilter();
+    renderSidebar();
+    const all = [...frames.values()].flatMap(f => f.variants);
+    statusEl.textContent = frames.size + " frames, " + all.length + " images";
+    baseStatus = statusEl.textContent;
+    const proofSum = all.reduce((a, r) => a + (r.proof_bytes || 0), 0);
+    const thumbSum = all.reduce((a, r) => a + (r.thumb_bytes || 0), 0);
+    totals = statusEl.textContent + " · proofs " + (proofSum / 1048576).toFixed(1) + " MB (avg " + kb(proofSum / Math.max(all.length, 1)) +
+             ") · thumbs " + (thumbSum / 1048576).toFixed(1) + " MB (avg " + kb(thumbSum / Math.max(all.length, 1)) + ") · press i to hide";
+    if (document.body.classList.contains("show-info")) statusEl.textContent = totals;
+    refreshFilters();
+  }
+
+  // A new or re-sent image arrived: fetch its full row (with marks) and update or add its card.
+  // Re-sent proofs have new file names, so the browser never shows a cached old version.
+  const pendingRows = new Map();
+  let applyTimer = null;
+  function imageChanged(id) {
+    pendingRows.set(id, true);
+    clearTimeout(applyTimer);
+    applyTimer = setTimeout(applyImageChanges, 400);        // a burst of uploads becomes one fetch
+  }
+  async function applyImageChanges() {
+    const ids = [...pendingRows.keys()];
+    pendingRows.clear();
+    let data;
+    try { data = await rpc("gallery_images", { p_ids: ids }); } catch { return; }
+    if (!data) return;
+    data.sort((a, b) => a.rel_path.localeCompare(b.rel_path) || a.variant_position - b.variant_position);
+    for (const row of data) {
+      const frame = frames.get(row.rel_path);
+      if (!frame) { addFrame([row]); continue; }
+      const i = frame.variants.findIndex(v => v.variant_position === row.variant_position);
+      if (i >= 0) frame.variants[i] = row; else frame.variants.push(row);
+      frame.variants.sort((a, b) => a.variant_position - b.variant_position);
+      const fresh = frameCard(frame.variants, i >= 0 ? i : 0);
+      frame.el.replaceWith(fresh);
+      frame.el = fresh;
+    }
+    updateTotals();
+  }
+
+  // One card per frame; variants are tabs on the card
+  function frameCard(variants, startAt = 0) {
+    const el = document.createElement("div");
+    el.className = "card";
+    el.innerHTML = `<img loading="lazy" decoding="async" alt="">
+      <span class="name"></span>
+      <div class="meta"><span class="tags"></span><span class="stars"></span></div>
+      <div class="info"></div>`;
+    const img = el.querySelector("img");
+    const nameEl = el.querySelector(".name");
+    const starsEl = el.querySelector(".stars");
+    const tagsEl = el.querySelector(".tags");
+    const infoEl = el.querySelector(".info");
+
+    const markOf = v => v;                              // rows carry rating + color_tag directly
+    const editedAt = [];                                // ignore polled values right after our own edit
+    const ratings = variants.map(v => markOf(v).rating || 0);
+    const colors = variants.map(v => markOf(v).color_tag || null);
+    let current = 0;
+    let tabs = [];
+
+    const drawStars = () => starsEl.querySelectorAll("button")
+      .forEach((b, i) => b.classList.toggle("on", i < ratings[current]));
+    const drawTags = () => {
+      tagsEl.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.tag === colors[current]));
+      el.classList.toggle("tagged", !!colors[current]);
+      if (colors[current]) el.style.setProperty("--tag", TAG_COLOR[colors[current]]);
+    };
+    const drawTabs = () => tabs.forEach((t, i) => {
+      t.classList.toggle("on", i === current);
+      t.innerHTML = "v" + variants[i].variant_position + (ratings[i] ? ` <span class="dot">★${ratings[i]}</span>` : "");
+    });
+    const redraw = () => { drawStars(); drawTags(); drawTabs(); scheduleFilterRefresh(); lightboxChanged(el); };
+    // Current rating + color per variant, read by the filters
+    el.getMarks = () => variants.map((v, i) => ({ rating: ratings[i] || 0, color: colors[i] || "none" }));
+    const show = i => {
+      current = i;
+      const v = variants[i];
+      img.src = publicUrl(v.thumb_path || v.storage_path);
+      nameEl.textContent = v.display_name || v.filename;
+      nameEl.title = v.filename;                            // hover shows the RAW file name too
+      infoEl.textContent = techInfo(v);
+      redraw();
+    };
+
+    // Saves rating + color together (one shared row per image; last change wins)
+    async function save(i, previous) {
+      editedAt[i] = Date.now();
+      try {
+        await rpc("gallery_set_mark", { p_image: variants[i].id, p_rating: ratings[i], p_color: colors[i] || "" });
+      } catch (error) {
+        ratings[i] = previous.rating; colors[i] = previous.color; redraw();
+        statusEl.textContent = "Save failed: " + error.message;
+      }
+    }
+
+    // Rating / tag actions, shared by the card and the large view
+    const rate = n => {
+      const i = current, previous = { rating: ratings[i], color: colors[i] };
+      ratings[i] = (previous.rating === n) ? 0 : n;        // same star again (or 0) clears
+      redraw();
+      save(i, previous);
+    };
+    const tag = name => {
+      const i = current, previous = { rating: ratings[i], color: colors[i] };
+      colors[i] = (previous.color === name) ? null : name;   // same color again clears
+      redraw();
+      save(i, previous);
+    };
+    el.api = {
+      variants, rate, tag,
+      get current() { return current; },
+      show: i => show(i),
+      mark: () => ({ rating: ratings[current] || 0, color: colors[current] || null })
+    };
+
+    img.onclick = () => openLightbox(variants[0].rel_path);
+
+    for (let n = 1; n <= 5; n++) {
+      const b = document.createElement("button");
+      b.textContent = "★";
+      b.title = n + " star" + (n > 1 ? "s" : "");
+      b.onclick = () => rate(n);
+      starsEl.appendChild(b);
+    }
+
+    for (const [name, hex] of TAGS) {
+      const b = document.createElement("button");
+      b.dataset.tag = name;
+      b.title = name[0].toUpperCase() + name.slice(1);
+      b.style.background = hex;
+      b.onclick = () => tag(name);
+      tagsEl.appendChild(b);
+    }
+
+    if (variants.length > 1) {
+      const bar = document.createElement("div");
+      bar.className = "variants";
+      tabs = variants.map((v, i) => {
+        const t = document.createElement("button");
+        t.onclick = () => show(i);
+        bar.appendChild(t);
+        return t;
+      });
+      el.appendChild(bar);
+    }
+
+    // Live updates from Capture One (or another viewer) land here
+    variants.forEach((v, i) => liveUpdate.set(v.id, (rating, color) => {
+      if (Date.now() - (editedAt[i] || 0) < 3000) return;     // our own save is still landing
+      ratings[i] = rating || 0;
+      colors[i] = color || null;
+      redraw();
+    }));
+
+    show(Math.min(startAt, variants.length - 1));
+    return el;
+  }
+
+  // Live updates: ask the server what changed every 4 s (every 30 s while the tab is hidden).
+  // New frames, re-sent proofs and rating/color changes from anyone show up without a refresh.
+  let since = null, polling = false, lastPoll = 0;
+  async function poll() {
+    if (polling || since === null) return;
+    polling = true; lastPoll = Date.now();
+    try {
+      const ch = await rpc("gallery_changes", { p_since: since });
+      if (ch === null) { askForCode("This gallery's access code has changed. Enter the new code."); since = null; return; }
+      since = ch.now;
+      for (const m of ch.marks || []) liveUpdate.get(m.image_id)?.(m.rating, m.color_tag);
+      for (const id of ch.images || []) imageChanged(id);
+    } catch { /* offline for a moment: try again next time */ }
+    finally { polling = false; }
+  }
+  setInterval(() => { if (Date.now() - lastPoll >= (document.hidden ? 30000 : 4000)) poll(); }, 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+
+  // --- Access code screen ---
+  const gate = document.getElementById("gate");
+  const gateMsg = document.getElementById("gate-msg");
+  const gateInput = document.getElementById("gate-code");
+  let gateTried = false;
+  function askForCode(message) {
+    try { localStorage.removeItem(CODE_KEY); } catch {}
+    gateMsg.textContent = message || "Enter the access code you were given.";
+    gateInput.value = "";
+    gate.hidden = false;
+    gateInput.focus();
+  }
+  document.getElementById("gate-form").onsubmit = e => {
+    e.preventDefault();
+    accessCode = gateInput.value.trim();
+    gateTried = true;
+    start();
+  };
+
+  async function start() {
+    if (!gallerySlug) { statusEl.textContent = "Open this gallery with the link you were sent."; return; }
+    if (!accessCode) { askForCode(); return; }
+    let info;
+    try { info = await rpc("gallery_open"); }
+    catch (e) { statusEl.textContent = "Can't reach the gallery: " + e.message; return; }
+    if (!info) { askForCode(gateTried ? "That code didn't work. Check it and try again." : undefined); return; }
+    try { localStorage.setItem(CODE_KEY, accessCode); } catch {}
+    gate.hidden = true;
+    saveAddress();                                       // takes the code out of the address bar
+    document.querySelector("h1").textContent = info.name;
+    document.title = info.name + " - Capture Review";
+    since = info.now;                                    // changes during loading are picked up next poll
+    await load();
+  }
+
+  const QUALITY = { cellular: "Cellular", wifi: "Wi-Fi", wired: "Wired" };
+  const kb = b => b ? Math.round(b / 1024) + " KB" : "?";
+  function techInfo(v) {
+    return (QUALITY[v.quality] || "unknown quality") + " · proof " + kb(v.proof_bytes) + " · thumb " + kb(v.thumb_bytes);
+  }
+
+  // Press "i" to toggle tech info (quality and sizes) on every card
+  let totals = "";
+  document.addEventListener("keydown", e => {
+    if (e.key !== "i" || e.target.matches("input, textarea")) return;
+    document.body.classList.toggle("show-info");
+    statusEl.textContent = document.body.classList.contains("show-info") ? totals : baseStatus;
+  });
+  let baseStatus = "";
+
+  start();
+</script>
+</body>
+</html>
