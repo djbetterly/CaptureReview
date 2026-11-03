@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Capture Review Admin</title>
+<style>
+  :root { --bg:#0b0e12; --card:#12161c; --line:#232a33; --text:#e9edf2; --dim:#8a95a3; --accent:#5ec8e5;
+          --ok:#46a758; --warn:#f5a524; --danger:#e5484d; --star:#f5b301; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px -apple-system, system-ui, sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:36px 16px 60px; }
+  h1 { font-size:28px; margin:0; }
+  .sub { color:var(--dim); margin:4px 0 0; }
+  .top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:24px; }
+  button, .btn { font:inherit; font-size:14px; color:var(--text); background:#1a2029; border:1px solid var(--line);
+                 border-radius:9px; padding:8px 14px; cursor:pointer; text-decoration:none; white-space:nowrap; }
+  button:hover, .btn:hover { border-color:#3a4552; }
+  button.primary { background:linear-gradient(90deg,#3e63dd,#5ec8e5); border:0; color:#071018; font-weight:600; }
+  button.danger { color:var(--danger); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+  .tiles { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:20px; }
+  .tile { padding:18px 20px; }
+  .tile .k { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
+  .tile .v { font-size:30px; font-weight:700; margin-top:8px; font-variant-numeric:tabular-nums; }
+  .tile .v small { font-size:16px; color:var(--dim); font-weight:400; }
+  .cov { display:flex; gap:28px; align-items:center; padding:20px; margin-bottom:28px; }
+  .cov h3 { margin:0 0 12px; font-size:17px; }
+  .ring { width:150px; height:150px; flex:none; }
+  .legend div { margin:6px 0; font-variant-numeric:tabular-nums; }
+  .dot { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:8px; vertical-align:-1px; }
+  .listhead { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:8px 0 12px; }
+  .listhead h2 { margin:0; font-size:18px; }
+  input[type=search], input[type=email], input[type=password] {
+    font:inherit; color:var(--text); background:#0f1318; border:1px solid var(--line); border-radius:9px; padding:9px 12px; }
+  .gal { padding:18px 20px; margin-bottom:14px; display:flex; justify-content:space-between; gap:16px; }
+  .gal h3 { margin:0 0 6px; font-size:18px; }
+  .meta { color:var(--dim); font-size:14px; display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; }
+  .pill { border:1px solid var(--line); border-radius:999px; padding:1px 9px; font-size:13px; }
+  .pill.open { color:var(--ok); border-color:#2c4f35; } .pill.closed { color:var(--dim); }
+  .pill.hidden { color:var(--warn); border-color:#5a4417; }
+  code { font:13px ui-monospace, SFMono-Regular, Menlo, monospace; background:#0f1318; border:1px solid var(--line);
+         border-radius:6px; padding:1px 6px; }
+  .link { font:14px ui-monospace, Menlo, monospace; color:var(--accent); margin:10px 0 6px; word-break:break-all; }
+  .actions { display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
+  .muted { color:var(--dim); font-size:14px; }
+  .login { max-width:380px; margin:12vh auto; padding:28px; }
+  .login form { display:flex; flex-direction:column; gap:10px; margin-top:18px; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1f2a36; border:1px solid var(--line);
+           padding:10px 16px; border-radius:10px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.on { opacity:1; }
+  /* Gallery view */
+  .folders { padding:6px 0; margin-bottom:20px; }
+  .frow { display:flex; align-items:center; gap:12px; padding:10px 18px; border-top:1px solid var(--line); }
+  .frow:first-child { border-top:0; }
+  .frow .name { flex:1; font-weight:600; }
+  .frow .counts { color:var(--dim); font-size:14px; font-variant-numeric:tabular-nums; }
+  .section h3 { display:flex; gap:10px; align-items:center; margin:26px 0 10px; font-size:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  .grid.dim { opacity:.55; }
+  .tile-img { background:#0f1318; border:1px solid var(--line); border-radius:8px; overflow:hidden; position:relative; }
+  .tile-img img { display:block; width:100%; aspect-ratio:3/2; object-fit:contain; background:#000; }
+  .tile-img .cap { font-size:12px; padding:5px 7px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile-img .stars { position:absolute; top:5px; right:6px; color:var(--star); font-size:12px; text-shadow:0 1px 2px #000; }
+  .tile-img .tag { position:absolute; top:7px; left:7px; width:10px; height:10px; border-radius:50%; }
+  @media (max-width:760px) { .tiles { grid-template-columns:1fr; } .gal { flex-direction:column; } .actions { align-items:stretch; }
+                              .cov { flex-direction:column; align-items:flex-start; } }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<main id="app"></main>
+<div id="toast"></div>
+<script>
+  // Capture Review admin: every gallery, upload progress and hidden folders. Clients never see this.
+  // Sign-in is Supabase Auth (email + password); only accounts listed in the `admins` table get data.
+  const CFG = window.CAPTURE_REVIEW_CONFIG || {};
+  const sb = supabase.createClient(CFG.supabaseURL, CFG.publishableKey);
+  const app = document.getElementById("app");
+  const TAG = { red:"#e5484d", orange:"#f76b15", yellow:"#ffc53d", green:"#46a758", blue:"#3e63dd", pink:"#d6409f", purple:"#8e4ec6" };
+  const clientLink = slug => location.origin + "/?g=" + encodeURIComponent(slug);
+  const publicUrl = path => path ? sb.storage.from("proofs").getPublicUrl(path).data.publicUrl : "";
+
+  // Small DOM helper: h("div", {class:"x", onclick:fn}, child, "text", …)
+  function h(tag, attrs = {}, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === null || v === undefined || v === false) continue;
+      if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+      else if (k === "class") el.className = v;
+      else el.setAttribute(k, v === true ? "" : v);
+    }
+    for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false)
+      el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+    return el;
+  }
+  function toast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg; t.classList.add("on");
+    clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("on"), 2200);
+  }
+  const fmtDate = s => s ? new Date(s).toLocaleDateString(undefined, { day:"2-digit", month:"short", year:"numeric" }) : "";
+  function ago(s) {
+    if (!s) return "";
+    const m = Math.round((Date.now() - new Date(s)) / 60000);
+    if (m < 1) return "just now"; if (m < 60) return m + " min ago";
+    const hrs = Math.round(m / 60); if (hrs < 48) return hrs + " h ago";
+    return Math.round(hrs / 24) + " days ago";
+  }
+
+  // --- Sign in ---
+  function showLogin(message) {
+    app.replaceChildren(h("div", { class:"card login" },
+      h("h1", {}, "Capture Review"), h("p", { class:"sub" }, "Admin sign in"),
+      h("form", { onsubmit: async e => {
+          e.preventDefault();
+          const f = e.target; const btn = f.querySelector("button"); btn.disabled = true;
+          const { error } = await sb.auth.signInWithPassword({ email: f.email.value.trim(), password: f.password.value });
+          btn.disabled = false;
+          if (error) { f.querySelector(".muted").textContent = error.message; return; }
+          route();
+        } },
+        h("input", { type:"email", name:"email", placeholder:"Email", autocomplete:"username", required:true }),
+        h("input", { type:"password", name:"password", placeholder:"Password", autocomplete:"current-password", required:true }),
+        h("button", { class:"primary", type:"submit" }, "Sign in"),
+        h("div", { class:"muted" }, message || ""))));
+  }
+
+  async function route() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return showLogin();
+    const id = new URLSearchParams(location.hash.slice(1)).get("gallery");
+    return id ? showGallery(id) : showDashboard();
+  }
+  window.addEventListener("hashchange", route);
+
+  async function signOut() { await sb.auth.signOut(); location.hash = ""; showLogin(); }
+
+  // --- Dashboard ---
+  let galleries = [];
+  async function showDashboard() {
+    app.replaceChildren(h("p", { class:"muted" }, "Loading…"));
+    const { data, error } = await sb.rpc("admin_galleries");
+    if (error) {
+      return error.message.includes("not allowed")
+        ? showLogin("This account isn't an admin.")
+        : app.replaceChildren(h("p", { class:"muted" }, "Couldn't load galleries: " + error.message));
+    }
+    galleries = data || [];
+    const active = galleries.filter(g => g.active).length;
+    const images = galleries.reduce((a, g) => a + g.images, 0);
+    const frames = galleries.reduce((a, g) => a + g.frames, 0);
+    const shots = galleries.reduce((a, g) => a + Math.max(g.shots, g.frames), 0);
+    const pct = shots ? Math.round(frames / shots * 100) : 0;
+
+    const search = h("input", { type:"search", placeholder:"Search a gallery or session…", oninput: () => drawList(search.value) });
+    const list = h("div", { id:"list" });
+    app.replaceChildren(
+      h("div", { class:"top" },
+        h("div", {}, h("h1", {}, "My galleries"), h("p", { class:"sub" }, "Every gallery, its upload progress and what the client can see.")),
+        h("button", { onclick: signOut }, "Sign out")),
+      h("div", { class:"tiles" },
+        tile("Active galleries", active, "/ " + galleries.length),
+        tile("Total galleries", galleries.length),
+        tile("Images", images.toLocaleString())),
+      h("div", { class:"card cov" }, ring(pct),
+        h("div", { class:"legend" }, h("h3", {}, "Upload coverage"),
+          h("div", {}, h("span", { class:"dot", style:"background:var(--accent)" }), h("b", {}, frames.toLocaleString()), "  uploaded"),
+          h("div", {}, h("span", { class:"dot", style:"background:#2a323c" }), h("b", {}, Math.max(shots - frames, 0).toLocaleString()), "  awaiting upload"),
+          h("div", { class:"muted" }, shots.toLocaleString() + " shots reported by Capture Review"))),
+      h("div", { class:"listhead" }, h("h2", {}, "Galleries"), search),
+      list);
+    drawList("");
+  }
+  function tile(k, v, small) { return h("div", { class:"card tile" }, h("div", { class:"k" }, k), h("div", { class:"v" }, v, small ? h("small", {}, " " + small) : null)); }
+  function ring(pct) {
+    const r = 62, c = 2 * Math.PI * r;
+    const svg = `<svg class="ring" viewBox="0 0 150 150"><circle cx="75" cy="75" r="${r}" fill="none" stroke="#2a323c" stroke-width="16"/>
+      <circle cx="75" cy="75" r="${r}" fill="none" stroke="#5ec8e5" stroke-width="16" stroke-dasharray="${c * pct / 100} ${c}"
+        transform="rotate(-90 75 75)" stroke-linecap="butt"/>
+      <text x="75" y="76" text-anchor="middle" font-size="28" font-weight="700" fill="#e9edf2">${pct}%</text>
+      <text x="75" y="98" text-anchor="middle" font-size="12" fill="#8a95a3">uploaded</text></svg>`;
+    const d = h("div"); d.innerHTML = svg; return d.firstChild;
+  }
+  function drawList(q) {
+    const list = document.getElementById("list");
+    const needle = q.trim().toLowerCase();
+    const rows = galleries.filter(g => !needle || (g.name + " " + (g.session_name || "")).toLowerCase().includes(needle));
+    list.replaceChildren(...(rows.length ? rows.map(galleryCard) : [h("p", { class:"muted" }, "No galleries match.")]));
+  }
+  function galleryCard(g) {
+    const link = clientLink(g.slug);
+    const awaiting = Math.max(g.shots - g.frames, 0);
+    return h("div", { class:"card gal" },
+      h("div", {},
+        h("h3", {}, g.name),
+        h("div", { class:"meta" },
+          `${g.images} image(s)`, "·", `created ${fmtDate(g.created_at)}`,
+          h("span", { class:"pill " + (g.active ? "open" : "closed") }, g.active ? "open" : "closed"),
+          "· code", h("code", {}, g.access_code || "none"),
+          g.session_name ? ["· session", h("code", {}, g.session_name)] : null,
+          g.hidden_folders ? h("span", { class:"pill hidden" }, `${g.hidden_folders} hidden folder${g.hidden_folders > 1 ? "s" : ""}`) : null),
+        h("div", { class:"link" }, link),
+        h("div", { class:"muted" },
+          (g.last_opened_at ? `Client opened it ${g.open_count}× · last ${ago(g.last_opened_at)}` : "No client access yet"),
+          g.client_marks ? ` · ${g.client_marks} rated/tagged by the client` : "",
+          awaiting ? ` · ${awaiting} awaiting upload` : "")),
+      h("div", { class:"actions" },
+        h("button", { class:"primary", onclick: () => copyInvite(g) }, "Copy link & code"),
+        h("button", { onclick: () => { location.hash = "gallery=" + g.id; } }, "Open gallery (admin)"),
+        h("a", { class:"btn", href: link + (g.access_code ? "#code=" + encodeURIComponent(g.access_code) : ""), target:"_blank", rel:"noopener" }, "View as client"),
+        h("button", { onclick: () => setActive(g, !g.active) }, g.active ? "Close gallery" : "Reopen gallery")));
+  }
+  async function copyInvite(g) {
+    const text = `${g.name}\nYour gallery: ${clientLink(g.slug)}\nAccess code: ${g.access_code || ""}`;
+    try { await navigator.clipboard.writeText(text); toast("Link and code copied: paste into email or a message"); }
+    catch { prompt("Copy this:", text); }
+  }
+  async function setActive(g, active) {
+    if (!active && !confirm(`Close "${g.name}"? The client's link stops working until you reopen it.`)) return;
+    const { error } = await sb.from("galleries").update({ active }).eq("id", g.id);
+    if (error) return toast("Couldn't change it: " + error.message);
+    toast(active ? "Gallery reopened" : "Gallery closed"); showDashboard();
+  }
+
+  // --- One gallery, hidden folders included ---
+  async function showGallery(id) {
+    app.replaceChildren(h("p", { class:"muted" }, "Loading…"));
+    const { data, error } = await sb.rpc("admin_gallery", { p_gallery: id });
+    if (error || !data || !data.gallery) return app.replaceChildren(h("p", { class:"muted" }, "Couldn't load the gallery: " + (error ? error.message : "not found")));
+    const g = data.gallery;
+    const byFolder = new Map();
+    for (const img of data.images) {
+      if (!byFolder.has(img.folder_path)) byFolder.set(img.folder_path, []);
+      byFolder.get(img.folder_path).push(img);
+    }
+    const label = f => f === "" ? "Capture (root)" : f;
+    app.replaceChildren(
+      h("div", { class:"top" },
+        h("div", {}, h("h1", {}, g.name),
+          h("p", { class:"sub" }, `Admin view: you see hidden folders too. Code `, h("code", {}, g.access_code || "none"),
+            g.last_opened_at ? ` · client last opened it ${ago(g.last_opened_at)}` : " · no client access yet")),
+        h("div", { style:"display:flex;gap:8px" },
+          h("button", { onclick: () => copyInvite(g) }, "Copy link & code"),
+          h("button", { onclick: () => { location.hash = ""; } }, "All galleries"))),
+      h("div", { class:"card folders" }, ...data.folders.map(f => h("div", { class:"frow" },
+        h("span", { class:"name" }, label(f.folder_path)),
+        h("span", { class:"counts" }, `${f.frames} uploaded` + (f.shots ? ` of ${Math.max(f.shots, f.frames)} shots` : "")),
+        h("span", { class:"pill " + (f.hidden ? "hidden" : "open") }, f.hidden ? "Hidden from client" : "Published"),
+        h("button", { onclick: () => setHidden(g.id, f.folder_path, !f.hidden) }, f.hidden ? "Publish to client" : "Hide from client")))),
+      ...[...byFolder.entries()].map(([folder, imgs]) => {
+        const hidden = data.folders.find(f => f.folder_path === folder)?.hidden;
+        return h("div", { class:"section" },
+          h("h3", {}, label(folder), h("span", { class:"muted" }, `${imgs.length}`), hidden ? h("span", { class:"pill hidden" }, "Hidden from client") : null),
+          h("div", { class:"grid" + (hidden ? " dim" : "") }, ...imgs.map(img => h("div", { class:"tile-img" },
+            h("img", { src: publicUrl(img.thumb_path), loading:"lazy", alt:"" }),
+            img.color_tag ? h("span", { class:"tag", style:"background:" + (TAG[img.color_tag] || "#888") }) : null,
+            img.rating ? h("span", { class:"stars" }, "★".repeat(img.rating)) : null,
+            h("div", { class:"cap", title: img.filename }, img.display_name || img.filename)))));
+      }));
+  }
+  async function setHidden(galleryId, folder, hidden) {
+    const { error } = await sb.from("folder_visibility")
+      .upsert({ gallery_id: galleryId, folder_path: folder, hidden }, { onConflict: "gallery_id,folder_path" });
+    if (error) return toast("Couldn't change it: " + error.message);
+    toast(hidden ? "Hidden from the client" : "Published to the client");
+    showGallery(galleryId);
+  }
+
+  route();
+</script>
+</body>
+</html>

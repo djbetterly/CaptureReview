@@ -139,7 +139,9 @@ struct ContentView: View {
                 if let uploader { await uploader.syncCatalog() }
                 // Folder list: shots vs gallery, in sync or not
                 if let catalog, let uploader {
-                    folderStatus = await uploader.folderStatus(shots: await catalog.capturedFiles())
+                    let shots = await catalog.capturedFiles()
+                    folderStatus = await uploader.folderStatus(shots: shots)
+                    await uploader.reportShotCounts(shots)           // admin page: awaiting upload
                 }
                 try? await Task.sleep(for: .seconds(3))
             }

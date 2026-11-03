@@ -730,6 +730,29 @@ actor ProofUploader {
         }
     }
 
+    // MARK: - Shot counts for the admin page ("awaiting upload")
+
+    nonisolated private struct StatsRow: Encodable, Sendable {
+        let gallery_id: String
+        let folder_path: String
+        let shots: Int
+    }
+    private var reportedShots: [String: Int] = [:]
+    private var lastShotReport = Date.distantPast
+
+    /// Sends each folder's RAW count to the server when it changed (at most every 30 s).
+    func reportShotCounts(_ shots: [String: Set<String>]) async {
+        let counts = shots.mapValues(\.count)
+        guard counts != reportedShots, Date().timeIntervalSince(lastShotReport) > 30 else { return }
+        lastShotReport = Date()
+        let rows = counts.map { StatsRow(gallery_id: galleryID.uuidString, folder_path: $0.key, shots: $0.value) }
+        guard !rows.isEmpty else { return }
+        do {
+            try await client.from("folder_stats").upsert(rows, onConflict: "gallery_id,folder_path").execute()
+            reportedShots = counts
+        } catch { /* offline: try again in 30 s */ }
+    }
+
     // MARK: - Delete a folder from the gallery
 
     nonisolated private struct PathRow: Decodable, Sendable {
