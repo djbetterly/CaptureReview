@@ -230,8 +230,6 @@ struct ContentView: View {
             Button(selection.count > 1 ? "Publish \(selection.count) Folders" : "Publish Folder") { publish(.changed) }
                 .keyboardShortcut(.defaultAction)
                 .help("Uploads new variants and ones you've re-graded since they were published")
-            Button("Apply Quality") { publish(.upgrade) }
-                .help("Re-sends published variants that went out at a different quality than the current setting")
             Button("Republish All") { publish(.all) }
                 .help("Re-renders and re-uploads every variant in the selected folders")
             if let phase = publishPhase {
