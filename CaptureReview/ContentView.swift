@@ -13,6 +13,9 @@ struct ContentView: View {
     @State private var cosLog: CosLog?
     @State private var cosMonitor: CosMonitor?
     @State private var galleryName = ""
+    // Manual publish progress, shown next to the buttons (step + seconds), nil when idle
+    @State private var publishPhase: String?
+    @State private var publishStarted = Date()
     @State private var folderStatus: [String: FolderSyncStatus] = [:]   // folder -> shots / gallery / sync
     // "Same job or new job?" when a session's folder name differs from its catalog
     @State private var showCopyPrompt = false
@@ -231,6 +234,17 @@ struct ContentView: View {
                 .help("Re-sends published variants that went out at a different quality than the current setting")
             Button("Republish All") { publish(.all) }
                 .help("Re-renders and re-uploads every variant in the selected folders")
+            if let phase = publishPhase {
+                ProgressView().controlSize(.small).padding(.leading, 6)
+                TimelineView(.periodic(from: publishStarted, by: 1)) { context in
+                    let secs = Int(context.date.timeIntervalSince(publishStarted))
+                    let slow = secs >= 5 && phase.hasPrefix("Waiting for Capture One")
+                    Text(phase + " \(secs) s" + (slow ? " (Capture One is slow to answer; it may be building previews)" : ""))
+                        .font(.caption).monospacedDigit()
+                        .foregroundStyle(slow ? Color.orange : Color.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+            }
         }
         .disabled(selection.isEmpty || busy)
     }
@@ -573,7 +587,12 @@ struct ContentView: View {
     /// Button entry point: always a full check (reads every variant's live adjustments).
     private func publish(_ mode: PublishMode) {
         let chosen = folders.filter { selection.contains($0) }
-        Task { status = await runPublish(chosen, mode, scope: .full).summary }
+        publishPhase = "Starting…"                       // feedback the moment the button is clicked
+        publishStarted = Date()
+        Task {
+            status = await runPublish(chosen, mode, scope: .full).summary
+            publishPhase = nil
+        }
     }
 
     private func isSelection(_ scope: PublishScope) -> Bool {
@@ -598,7 +617,9 @@ struct ContentView: View {
         defer { busy = false }
         let names = chosen.map { $0.isEmpty ? "Capture" : $0 }
         let scoped = isSelection(scope)
+        let folderText = "\(chosen.count) folder\(chosen.count == 1 ? "" : "s")"
         if !scoped { status = "Reading variants from Capture One…" }
+        if !isAuto { publishPhase = "Waiting for Capture One to list \(folderText)…" }
 
         // 1. Which variants exist (and, for a full check, their live adjustments)
         let t0 = Date()
@@ -625,12 +646,15 @@ struct ContentView: View {
                 if unstable.isEmpty || attempt == 3 { break }
                 try? await Task.sleep(for: .seconds(1))
             }
-            // Fresh read of every variant: send any Capture One rating/tag changes to the gallery
-            await ratingSync?.reportCaptureOne(variants)
         }
+        let tC1 = Date()
+        // Fresh read of every variant: send any Capture One rating/tag changes to the gallery
+        if !isAuto { publishPhase = "Sending Capture One ratings to the gallery…" }
+        if case .only = scope {} else { await ratingSync?.reportCaptureOne(variants) }
 
         // 2. Compare with what's already uploaded (and what's still in flight)
         if !scoped { status = "Checking what's already uploaded…" }
+        if !isAuto { publishPhase = "Comparing \(variants.count) image\(variants.count == 1 ? "" : "s") with the gallery…" }
         let t1 = Date()
         // Auto-publish sends new frames only; re-grades wait for the Publish button
         let plan = await uploader.planBatch(variants: variants, folders: chosen, mode: mode,
@@ -644,8 +668,9 @@ struct ContentView: View {
             log.add(UploadLogEntry(time: Date(), name: checkName, kind: .info,
                                    quality: "", width: 0, height: 0, bytes: 0,
                                    seconds: t2.timeIntervalSince(t0),
-                                   note: String(format: "%d variants · Capture One %.2f s · compare %.2f s",
-                                                variants.count, t1.timeIntervalSince(t0), t2.timeIntervalSince(t1))
+                                   note: String(format: "%d variants · Capture One %.2f s · ratings %.2f s · compare %.2f s",
+                                                variants.count, tC1.timeIntervalSince(t0), t1.timeIntervalSince(tC1),
+                                                t2.timeIntervalSince(t1))
                                        + importing))
         }
         if let error = plan.error { return PublishOutcome(summary: error) }
@@ -661,7 +686,14 @@ struct ContentView: View {
         }
 
         // 3. Render only those variants, in one Capture One command
-        switch await CaptureOneScripts.process(variantIDs: plan.variantIDs, collectionNames: names) {
+        if !isAuto { publishPhase = "Asking Capture One to render \(plan.variantIDs.count)…" }
+        let t3 = Date()
+        let processed = await CaptureOneScripts.process(variantIDs: plan.variantIDs, collectionNames: names)
+        log.add(UploadLogEntry(time: Date(), name: "Render request", kind: .info, quality: "", width: 0, height: 0,
+                               bytes: 0, seconds: Date().timeIntervalSince(t3),
+                               note: String(format: "%d variants · Capture One accepted in %.2f s",
+                                            plan.variantIDs.count, Date().timeIntervalSince(t3))))
+        switch processed {
         case .success(let count):
             return PublishOutcome(summary: "\(plan.summary)\(waiting). Rendering \(count) variant\(count == "1" ? "" : "s").",
                                   queued: Int(count) ?? 0, needsRecheck: recheck,
