@@ -273,6 +273,8 @@ struct ContentView: View {
         HStack {
             Button("Open Gallery") { openGallery() }
             Button("Upload Log") { log.showWindow() }
+            SettingsLink { Text("Re-grade Rules…") }
+                .help("Choose which adjustments count as a re-grade, and how big a change must be")
             Button("Settings Log") {
                 if let url = cosLog?.url { NSWorkspace.shared.open(url) }
                 else { status = "Choose a session first" }

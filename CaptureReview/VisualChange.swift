@@ -45,7 +45,27 @@ nonisolated enum VisualChange {
 
     /// Live read: every changed setting, split into visible (re-grade) and minor (ignored).
     static func analyze(sent: String, now: String) -> (visible: [String], minor: [String]) {
-        compare(fields(sent), fields(now), thresholds: tolerance, ignored: ignoredText)
+        let current = fields(now)
+        RegradeRules.shared.noteSeen(Dictionary(uniqueKeysWithValues: current.map { ("live:" + $0.key, short($0.value)) }))
+        return compare(fields(sent), current, thresholds: tolerance, ignored: ignoredText, rulePrefix: "live:")
+    }
+
+    /// Records the settings a live read contains (fills the Re-grade rules list).
+    static func noteLive(_ text: String) {
+        guard !text.isEmpty else { return }
+        RegradeRules.shared.noteSeen(Dictionary(uniqueKeysWithValues: fields(text).map { ("live:" + $0.key, short($0.value)) }))
+    }
+
+    /// Records the keys a settings file contains (fills the Re-grade rules list).
+    static func noteDisk(_ entries: [String]) {
+        var seen: [String: String] = [:]
+        for e in entries where !e.hasPrefix("<") {
+            guard let bar = e.firstIndex(of: "|") else { continue }
+            let rest = e[e.index(after: bar)...]
+            guard let eq = rest.firstIndex(of: "=") else { continue }
+            seen["file:" + String(rest[..<eq])] = short(String(rest[rest.index(after: eq)...]))
+        }
+        if !seen.isEmpty { RegradeRules.shared.noteSeen(seen) }
     }
 
     /// Settings file: same idea for .cos entries ("path|Key=Value", structure "<Name attrs>@path").
@@ -70,20 +90,39 @@ nonisolated enum VisualChange {
             let name = String(k.split(separator: "/").last ?? Substring(k))
             if let t = diskTolerance[name] { byFullKey[k] = t }
         }
-        var result = compare(a.values, b.values, thresholds: byFullKey, ignored: [])
-        for added in b.structure.subtracting(a.structure).sorted() { result.visible.append("+" + short(added)) }
-        for removed in a.structure.subtracting(b.structure).sorted() { result.visible.append("-" + short(removed)) }
+        var seen: [String: String] = [:]
+        for (k, v) in b.values { seen["file:" + String(k.split(separator: "/").last ?? Substring(k))] = short(v) }
+        RegradeRules.shared.noteSeen(seen)
+        var result = compare(a.values, b.values, thresholds: byFullKey, ignored: [], rulePrefix: "file:")
+        let structureCounts = RegradeRules.shared.structureCounts
+        for added in b.structure.subtracting(a.structure).sorted() {
+            if structureCounts { result.visible.append("+" + short(added)) } else { result.minor.append("[off] +" + short(added)) }
+        }
+        for removed in a.structure.subtracting(b.structure).sorted() {
+            if structureCounts { result.visible.append("-" + short(removed)) } else { result.minor.append("[off] -" + short(removed)) }
+        }
         return result
     }
 
     private static func compare(_ a: [String: String], _ b: [String: String],
-                                thresholds: [String: Double], ignored: Set<String>)
+                                thresholds: [String: Double], ignored: Set<String>, rulePrefix: String)
         -> (visible: [String], minor: [String]) {
         var visible: [String] = [], minor: [String] = []
         for key in Set(a.keys).union(b.keys).sorted() {
             let x = a[key] ?? "", y = b[key] ?? ""
             if x == y { continue }
             let line = "\(key) \(short(x))→\(short(y))"
+            // The user's rule for this setting (Settings > Re-grade rules): off = never a re-grade
+            let rule = RegradeRules.shared.rule(rulePrefix + String(key.split(separator: "/").last ?? Substring(key)))
+            if rule?.counts == false { minor.append("[off] " + line); continue }
+            if let t = rule?.threshold {
+                let nx = numbers(x), ny = numbers(y)
+                if !nx.isEmpty, nx.count == ny.count {
+                    let biggest = zip(nx, ny).map { abs($0 - $1) }.max() ?? 0
+                    if biggest >= t - 1e-9 { visible.append(line) } else { minor.append(line) }
+                    continue
+                }
+            }
             let nx = numbers(x), ny = numbers(y)
             if !nx.isEmpty || !ny.isEmpty {
                 // Numeric (or a list of numbers, e.g. a crop rectangle or curve): compare each number
@@ -138,5 +177,5 @@ nonisolated enum VisualChange {
         return out
     }
 
-    private static func short(_ s: String) -> String { s.count > 40 ? String(s.prefix(40)) + "…" : s }
+    static func short(_ s: String) -> String { s.count > 40 ? String(s.prefix(40)) + "…" : s }
 }

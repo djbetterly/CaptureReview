@@ -402,7 +402,11 @@ actor ProofUploader {
                              note: "Settings changed: " + changedKeys.prefix(12).joined(separator: ", ")
                                  + (changedKeys.count > 12 ? " (+\(changedKeys.count - 12) more)" : ""))
             }
-            if !settings.isEmpty { lastSettings[settingsKey] = settings }
+            if !settings.isEmpty {
+                if lastSettings[settingsKey] == nil { VisualChange.noteDisk(Array(settings)) }   // fills Re-grade rules
+                lastSettings[settingsKey] = settings
+            }
+            if !v.liveText.isEmpty, sentLiveText[settingsKey] == nil { VisualChange.noteLive(v.liveText) }
 
             // Read the row cache NOW, not the snapshot from the start of planning: reading live
             // adjustments can take seconds while Capture One renders, and an upload that finished

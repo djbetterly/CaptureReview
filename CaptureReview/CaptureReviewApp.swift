@@ -13,5 +13,9 @@ struct CaptureReviewApp: App {
         WindowGroup {
             ContentView()
         }
+        // Capture Review > Settings… (⌘,)
+        Settings {
+            RegradeRulesView()
+        }
     }
 }
