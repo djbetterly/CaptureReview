@@ -122,6 +122,30 @@ final class UploadStats {
     }
 }
 
+/// One folder's line in the folder list.
+nonisolated struct FolderSyncStatus: Sendable, Equatable {
+    var shots = 0              // RAW files in the folder on disk
+    var galleryFrames = 0      // of those names, frames the client can see
+    var galleryImages = 0      // client-visible images incl. clones (variants)
+    var notUploaded = 0        // on disk, not in the gallery
+    var notOnDisk = 0          // in the gallery, no longer on disk (sync pending)
+    var uploading = 0          // rendering / uploading now
+    var regradesWaiting = 0    // re-graded, held for Publish
+
+    var inSync: Bool { notUploaded == 0 && notOnDisk == 0 && uploading == 0 && regradesWaiting == 0 }
+
+    /// "3 to upload · 1 re-grade waiting"
+    var problems: String {
+        var p: [String] = []
+        let toUpload = max(notUploaded - uploading, 0)
+        if uploading > 0 { p.append("\(uploading) uploading") }
+        if toUpload > 0 { p.append("\(toUpload) not in gallery") }
+        if notOnDisk > 0 { p.append("\(notOnDisk) to remove") }
+        if regradesWaiting > 0 { p.append("\(regradesWaiting) re-grade\(regradesWaiting == 1 ? "" : "s") waiting") }
+        return p.joined(separator: " · ")
+    }
+}
+
 /// A gallery's name, link (slug) and access code (Mac app only; read with the secret key).
 nonisolated struct GalleryAccess: Decodable, Sendable {
     let name: String
@@ -669,6 +693,39 @@ actor ProofUploader {
         var g = SystemRandomNumberGenerator()                // cryptographically secure on macOS
         let chars = (0..<8).map { _ in alphabet.randomElement(using: &g)! }
         return String(chars[0..<4]) + "-" + String(chars[4..<8])
+    }
+
+    /// Per-folder sync state for the folder list: shots on disk vs what the client can see,
+    /// plus anything still on its way (uploads, re-grades waiting for Publish).
+    func folderStatus(shots: [String: Set<String>]) async -> [String: FolderSyncStatus] {
+        let rows = (try? await existingRows()) ?? [:]
+        var galleryRaws: [String: Set<String>] = [:]
+        var galleryImages: [String: Int] = [:]
+        for row in rows.values where row.deleted_at == nil && !row.rel_path.hasPrefix(".") {
+            let parts = row.rel_path.split(separator: "/")
+            let folder = parts.count > 1 ? String(parts[0]) : ""
+            galleryRaws[folder, default: []].insert(String(parts.last ?? Substring(row.rel_path)))
+            galleryImages[folder, default: 0] += 1
+        }
+        var uploading: [String: Int] = [:]
+        for item in pending.values { uploading[item.folder, default: 0] += 1 }
+        var regrades: [String: Int] = [:]
+        for key in waitingRegrades {
+            let rel = key.split(separator: "#").first.map(String.init) ?? key
+            let parts = rel.split(separator: "/")
+            regrades[parts.count > 1 ? String(parts[0]) : "", default: 0] += 1
+        }
+        var out: [String: FolderSyncStatus] = [:]
+        for folder in Set(shots.keys).union(galleryRaws.keys).union(uploading.keys).union(regrades.keys) {
+            let onDisk = shots[folder] ?? [], inGallery = galleryRaws[folder] ?? []
+            out[folder] = FolderSyncStatus(shots: onDisk.count, galleryFrames: inGallery.count,
+                                           galleryImages: galleryImages[folder] ?? 0,
+                                           notUploaded: onDisk.subtracting(inGallery).count,
+                                           notOnDisk: inGallery.subtracting(onDisk).count,
+                                           uploading: uploading[folder] ?? 0,
+                                           regradesWaiting: regrades[folder] ?? 0)
+        }
+        return out
     }
 
     /// Images in the gallery per capture folder ("" = Capture root). Uses the local row cache,

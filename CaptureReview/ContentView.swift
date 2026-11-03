@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var cosLog: CosLog?
     @State private var cosMonitor: CosMonitor?
     @State private var galleryName = ""
+    @State private var folderStatus: [String: FolderSyncStatus] = [:]   // folder -> shots / gallery / sync
     // "Same job or new job?" when a session's folder name differs from its catalog
     @State private var showCopyPrompt = false
     @State private var copyURL: URL?
@@ -89,7 +90,7 @@ struct ContentView: View {
             Text(status).font(.callout).foregroundStyle(.secondary)
         }
         .padding(20)
-        .frame(minWidth: 480, minHeight: 520, alignment: .topLeading)
+        .frame(minWidth: 680, minHeight: 520, alignment: .topLeading)
         .onChange(of: selection) { _, new in auto.folders = new }
         .onChange(of: regradesWaiting) { _, n in
             NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil          // count on the Dock icon
@@ -119,6 +120,10 @@ struct ContentView: View {
                 }
                 // Renames / deletes reach the gallery even when nothing is being published
                 if let uploader { await uploader.syncCatalog() }
+                // Folder list: shots vs gallery, in sync or not
+                if let catalog, let uploader {
+                    folderStatus = await uploader.folderStatus(shots: await catalog.capturedFiles())
+                }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
@@ -153,10 +158,34 @@ struct ContentView: View {
             }
             .toggleStyle(.checkbox)
             Spacer()
-            if let n = uploadedCounts[folder], n > 0 {
-                Text("\(n) uploaded").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            folderBadge(folder)
+        }
+    }
+
+    /// "120 shots · 118 in gallery" + In sync / what's missing / Not published
+    @ViewBuilder private func folderBadge(_ folder: String) -> some View {
+        let st = folderStatus[folder] ?? FolderSyncStatus()
+        let ticked = selection.contains(folder)
+        HStack(spacing: 8) {
+            Text("\(st.shots) shot\(st.shots == 1 ? "" : "s")")
+            Text("\(st.galleryFrames) in gallery" + (st.galleryImages > st.galleryFrames
+                                                     ? " (+\(st.galleryImages - st.galleryFrames) variants)" : ""))
+            if !ticked && st.galleryImages == 0 {
+                Label("Not published", systemImage: "minus.circle")
+                    .foregroundStyle(.secondary)
+            } else if st.inSync {
+                Label("In sync", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Label(st.problems.isEmpty ? "Out of sync" : st.problems, systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(.orange)
+                    .help(ticked ? "Out of sync: " + st.problems : "Not ticked, so new shots aren't published")
             }
         }
+        .font(.caption)
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
     }
 
     private var tickedTotalText: String {

@@ -104,8 +104,10 @@ actor Catalog {
             id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, image_id TEXT, kind TEXT, detail TEXT);
         """)
 
-        // v2: settings-file baseline per variant (fails harmlessly if the column exists)
-        Self.exec(handle, "ALTER TABLE variants ADD COLUMN sent_disk TEXT")
+        // v2: settings-file baseline per variant (added once; checked first so SQLite logs nothing)
+        var hasSentDisk = false
+        Self.query(handle, "SELECT 1 FROM pragma_table_info('variants') WHERE name='sent_disk'") { _ in hasSentDisk = true }
+        if !hasSentDisk { Self.exec(handle, "ALTER TABLE variants ADD COLUMN sent_disk TEXT") }
 
         // Session identity: made once, kept forever (galleries will be keyed on this, not the name)
         var sid = ""
@@ -192,6 +194,18 @@ actor Catalog {
     func isInCapture(uid: String) -> Bool {
         guard let img = images[uid] else { return true }        // unknown: don't block the upload
         return img.state != "deleted" && img.relPath.hasPrefix("Capture/")
+    }
+
+    /// RAW file names on disk per Capture folder ("" = Capture root), for the folder list.
+    func capturedFiles() -> [String: Set<String>] {
+        var out: [String: Set<String>] = [:]
+        for img in images.values where img.state == "present" && img.relPath.hasPrefix("Capture/") {
+            let rel = img.relPath.dropFirst("Capture/".count)
+            let parts = rel.split(separator: "/")
+            let folder = parts.count > 1 ? String(parts[0]) : ""
+            out[folder, default: []].insert(String(parts.last ?? Substring(rel)))
+        }
+        return out
     }
 
     /// Every image the catalog knows (for syncing the gallery).
