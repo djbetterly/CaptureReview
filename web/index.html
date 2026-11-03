@@ -210,6 +210,8 @@
   // rel_path -> { variants, el }   and   folder_path ("" = Capture root) -> { wrap, h, grid, count }
   const frames = new Map();
   const folderSections = new Map();
+  // image id -> rel_path it is shown under (renames keep the id, so the card can follow them)
+  const idToRel = new Map();
   const sidebarEl = document.getElementById("sidebar");
   const folderLabel = f => f === "" ? "Capture (root)" : f;
   const naturalSort = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
@@ -289,6 +291,36 @@
     section.count += 1;
     section.h.textContent = folderLabel(folder) + " (" + section.count + ")";
     frames.set(variants[0].rel_path, { variants, el });
+    for (const v of variants) idToRel.set(v.id, v.rel_path);
+  }
+
+  // Takes one image off the page: deleted in Capture One, or about to reappear under a new name.
+  // Ratings live on the image id in the database, so a renamed frame keeps them.
+  function removeImage(id, movedTo = null) {
+    const rel = idToRel.get(id);
+    idToRel.delete(id);
+    liveUpdate.delete(id);
+    pendingRows.delete(id);
+    const frame = rel !== undefined ? frames.get(rel) : null;
+    if (!frame) return;
+    const left = frame.variants.filter(v => v.id !== id);
+    if (left.length) {
+      frame.variants = left;
+      const fresh = frameCard(left, 0);
+      frame.el.replaceWith(fresh);
+      frame.el = fresh;
+      return;
+    }
+    const folder = frame.variants[0].folder_path || "";
+    frame.el.remove();
+    frames.delete(rel);
+    const section = folderSections.get(folder);
+    if (section) {
+      section.count = Math.max(0, section.count - 1);
+      section.h.textContent = folderLabel(folder) + " (" + section.count + ")";
+      section.wrap.classList.toggle("empty", section.count === 0);
+    }
+    if (lbRel === rel) { if (movedTo !== null) lbRel = movedTo; else closeLightbox(); }
   }
 
   // --- Filters ---
@@ -599,6 +631,8 @@
     if (!data) return;
     data.sort((a, b) => a.rel_path.localeCompare(b.rel_path) || a.variant_position - b.variant_position);
     for (const row of data) {
+      const was = idToRel.get(row.id);
+      if (was !== undefined && was !== row.rel_path) removeImage(row.id, row.rel_path);   // renamed or moved
       const frame = frames.get(row.rel_path);
       if (!frame) { addFrame([row]); continue; }
       const i = frame.variants.findIndex(v => v.variant_position === row.variant_position);
@@ -607,8 +641,10 @@
       const fresh = frameCard(frame.variants, i >= 0 ? i : 0);
       frame.el.replaceWith(fresh);
       frame.el = fresh;
+      idToRel.set(row.id, row.rel_path);
     }
     updateTotals();
+    if (!lb.hidden) drawLightbox(false);
   }
 
   // One card per frame; variants are tabs on the card
@@ -742,6 +778,10 @@
       since = ch.now;
       for (const m of ch.marks || []) liveUpdate.get(m.image_id)?.(m.rating, m.color_tag);
       for (const id of ch.images || []) imageChanged(id);
+      // Deleted in Capture One: off the page (their ratings are kept in case it's restored)
+      const removed = ch.removed || [];
+      for (const id of removed) removeImage(id);
+      if (removed.length) updateTotals();
     } catch { /* offline for a moment: try again next time */ }
     finally { polling = false; }
   }
