@@ -789,6 +789,8 @@ struct ContentView: View {
                                bytes: 0, seconds: Date().timeIntervalSince(t3),
                                note: String(format: "%d variants · Capture One accepted in %.2f s",
                                             plan.variantIDs.count, Date().timeIntervalSince(t3))))
+        // New frames were rendered without waiting for their adjustments: read them now, in the background
+        Task { await uploader.fillDeferredLive(collectionNames: names) }
         switch processed {
         case .success(let count):
             return PublishOutcome(summary: "\(plan.summary)\(waiting). Rendering \(count) variant\(count == "1" ? "" : "s").",

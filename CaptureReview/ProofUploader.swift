@@ -193,8 +193,8 @@ actor ProofUploader {
         let raw: String
         let variantID: String
         let position: Int
-        let stamp: String              // live fingerprint at publish time
-        let liveText: String           // the readable adjustments behind it (recorded in the catalog)
+        var stamp: String              // live fingerprint at publish time ("" until read, see deferredLive)
+        var liveText: String           // the readable adjustments behind it (recorded in the catalog)
         let imageUID: String?          // session catalog's permanent id for the RAW
         let displayName: String
         let oldPaths: [String]
@@ -253,6 +253,10 @@ actor ProofUploader {
     private let regradeSettle: TimeInterval = 5
     /// Re-graded variants held back for a manual Publish ("rel_path#position")
     private var waitingRegrades = Set<String>()
+    /// New frames rendered before their live adjustments were read (Capture One answers that
+    /// slowly while importing: 80 frames took 68 s on 4 Nov). Read right after the render
+    /// request and recorded as the sent baseline. variant id -> (flight key, rel path, position, tries)
+    private var deferredLive: [String: (key: String, relPath: String, position: Int, tries: Int)] = [:]
     /// Readable live adjustments at the time each variant was sent (or last confirmed unchanged),
     /// so a detected re-grade can say exactly which values changed. Memory only.
     private var sentLiveText: [String: String] = [:]
@@ -350,7 +354,13 @@ actor ProofUploader {
             let rawURL = URL(fileURLWithPath: v.rawPath)
             let relPath = folder.isEmpty ? rawURL.lastPathComponent : "\(folder)/\(rawURL.lastPathComponent)"
             guard let old = existing["\(relPath)#\(v.position)"], mode == .changed else {
-                needLive.append(v.id)                       // new, or forced / quality re-send
+                // New frame: always sent, so render it now and read its adjustments afterwards
+                if mode == .changed {
+                    let stem = rawURL.deletingPathExtension().lastPathComponent
+                    deferredLive[v.id] = (key: "\(stem)_v\(v.position)", relPath: relPath, position: v.position, tries: 0)
+                } else {
+                    needLive.append(v.id)                   // forced / quality re-send
+                }
                 continue
             }
             let parsed = digestCache[v.rawPath]
@@ -592,7 +602,8 @@ actor ProofUploader {
 
         if plan.duplicates.isEmpty && !plan.variantIDs.isEmpty {
             pending.merge(queued) { _, new in new }
-            await MainActor.run { stats.begin(total: plan.variantIDs.count) }
+            let total = plan.variantIDs.count
+            await MainActor.run { stats.begin(total: total) }
         }
         return plan
     }
@@ -1005,6 +1016,46 @@ actor ProofUploader {
     }
 
     /// Updates the stored fingerprint without re-sending the image.
+    /// Reads the live adjustments of new frames that were rendered without them (see deferredLive)
+    /// and records them as what was sent. Runs after the render request, off the critical path.
+    func fillDeferredLive(collectionNames: [String]) async {
+        let ids = Array(deferredLive.keys)
+        guard !ids.isEmpty else { return }
+        let t0 = Date()
+        let live = await CaptureOneScripts.liveFingerprints(variantIDs: ids, collectionNames: collectionNames)
+        var stored = 0
+        for id in ids {
+            guard let d = deferredLive[id] else { continue }
+            guard let text = live[id] else {
+                // Not readable yet: try again next time; after 3 tries the next full check adopts it
+                if d.tries >= 2 { deferredLive[id] = nil } else { deferredLive[id]?.tries += 1 }
+                continue
+            }
+            deferredLive[id] = nil
+            let fingerprint = CaptureOneScripts.fingerprint(text)
+            if var p = pending[d.key], p.variantID == id {
+                p.stamp = fingerprint; p.liveText = text; pending[d.key] = p      // not uploaded yet
+            }
+            // Already uploaded (or uploading): fix the stored stamp
+            if let row = rowCache?["\(d.relPath)#\(d.position)"], Stamp(row.source_stamp).live.isEmpty {
+                await storeBaseline(relPath: d.relPath, position: d.position, variantID: id,
+                                    live: fingerprint, liveText: text)
+            }
+            stored += 1
+        }
+        await addLog(name: "Adjustments read", kind: .info,
+                     note: String(format: "%d of %d new frames after rendering · Capture One %.2f s",
+                                  stored, ids.count, Date().timeIntervalSince(t0)))
+    }
+
+    private func storeBaseline(relPath: String, position: Int, variantID: String,
+                               live: String, liveText: String) async {
+        let disk = Stamp(rowCache?["\(relPath)#\(position)"]?.source_stamp).disk
+        await updateStamp(relPath: relPath, position: position, stamp: Stamp(live: live, disk: disk).text)
+        sentLiveText["\(relPath)#\(position)"] = liveText
+        await catalog?.adoptBaseline(captureRel: relPath, position: position, variantID: variantID, live: liveText)
+    }
+
     private func updateStamp(relPath: String, position: Int, stamp: String) async {
         if let r = rowCache?["\(relPath)#\(position)"] {
             cacheRow("\(relPath)#\(position)", ExistingRow(
@@ -1297,6 +1348,11 @@ actor ProofUploader {
         await catalog?.recordSent(captureRel: relPath, position: item.position, variantID: item.variantID,
                                   live: item.liveText, proofPath: proofPath, thumbPath: thumbPath,
                                   quality: profile.rawValue)
+        // Rendered before its adjustments were read, and they arrived during this upload
+        if item.stamp.isEmpty, let filled = pending[key], !filled.stamp.isEmpty {
+            await storeBaseline(relPath: relPath, position: item.position, variantID: item.variantID,
+                                live: filled.stamp, liveText: filled.liveText)
+        }
 
         // Remove the previous version's files (old grade or old quality)
         let stale = item.oldPaths.filter { $0 != thumbPath && $0 != proofPath }
