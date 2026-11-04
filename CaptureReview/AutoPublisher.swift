@@ -76,7 +76,11 @@ final class AutoPublisher {
     private var lastSelectionCheck = Date.distantPast
     private var lastSweep = Date()
     private var lastFrameAt = Date.distantPast
-    private var selectionBroken = false
+    /// Failed selection checks in a row, and when to try again. Capture One refuses the
+    /// selection now and then while it is busy (e.g. rendering a large batch), so a failure
+    /// only pauses the check; it is retried with a growing delay, never switched off for good.
+    private var selectionFailures = 0
+    private var selectionRetryAt = Date.distantPast
 
     func setSession(_ sessionRoot: URL) {
         captureRoot = sessionRoot.appendingPathComponent("Capture").standardizedFileURL
@@ -92,7 +96,8 @@ final class AutoPublisher {
             self?.handle(paths)
         }
         lastSweep = Date()
-        selectionBroken = false
+        selectionFailures = 0
+        selectionRetryAt = .distantPast
         ticker = Task { [weak self] in                      // checks once a second
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
@@ -176,17 +181,20 @@ final class AutoPublisher {
         }
 
         // 2. Selection check: only the images selected in Capture One
-        if !selectionBroken, now.timeIntervalSince(lastSelectionCheck) >= selectionSeconds {
+        if now >= selectionRetryAt, now.timeIntervalSince(lastSelectionCheck) >= selectionSeconds {
             lastSelectionCheck = now
             running = true
             let result = await CaptureOneScripts.selection()
             running = false
             switch result {
             case .failure(let failure):
-                // Fall back to settings-file checks and sweeps; say so instead of retrying forever
-                selectionBroken = true
-                status = "Selection check unavailable (\(failure.message)). Using settings-file checks."
+                // Settings-file checks still catch everything meanwhile; retry after 5, 10, 20... s (max 60)
+                selectionFailures += 1
+                let wait = min(60, 5 * pow(2, Double(selectionFailures - 1)))
+                selectionRetryAt = now.addingTimeInterval(wait)
+                status = "Selection check paused \(Int(wait)) s (Capture One: \(failure.message)). Settings-file checks continue."
             case .success(let selection):
+                if selectionFailures > 0 { selectionFailures = 0; status = watchingText }
                 if !selection.variants.isEmpty { await reportMarks?(selection.variants) }
                 let stamp = Date()
                 for v in selection.variants { watched[v.id] = (v, stamp) }

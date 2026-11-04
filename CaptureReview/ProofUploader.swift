@@ -175,6 +175,8 @@ nonisolated struct PublishPlan: Sendable {
     var skipped = 0
     var duplicates: [String] = []
     var error: String?
+    /// Where the compare time went (for the log): "sync 0.2 · rows 0.3 · live 56 in 40.1 · files 1.2 · decide 0.4"
+    var timing = ""
 
     var summary: String {
         var parts = ["\(new) new", "\(changed) changed"]
@@ -297,7 +299,9 @@ actor ProofUploader {
 
         // Renames, moves, deletes and restores go to the gallery FIRST: otherwise a renamed RAW
         // would look like a new frame and be uploaded a second time.
+        let tStart = Date()
         await syncCatalog()
+        let tSync = Date()
 
         let existing: [String: ExistingRow]
         do { existing = try await existingRows() }
@@ -336,6 +340,7 @@ actor ProofUploader {
             }
         }
 
+        let tRows = Date()
         var digestCache: [String: (digests: [String], entries: [[String]], ready: Bool)] = [:]
 
         // Quick inventory: read live adjustments only for the variants that need them.
@@ -356,9 +361,13 @@ actor ProofUploader {
             let oldDisk = Stamp(old.source_stamp).disk
             if !disk.isEmpty, !oldDisk.isEmpty, disk != oldDisk { needLive.append(v.id) }   // settings file changed
         }
+        let tFiles = Date()
+        var liveSecs = 0.0
         if !needLive.isEmpty {
             let names = folders.map { $0.isEmpty ? "Capture" : $0 }
+            let tLive = Date()
             let live = await CaptureOneScripts.liveFingerprints(variantIDs: needLive, collectionNames: names)
+            liveSecs = Date().timeIntervalSince(tLive)
             let wanted = Set(needLive)
             var filled: [(variant: C1Variant, folder: String)] = []
             for entry in selected {
@@ -568,6 +577,11 @@ actor ProofUploader {
             if !v.liveText.isEmpty { sentLiveText[settingsKey] = v.liveText }
         }
         plan.regradesWaiting = waitingRegrades.count
+        let tEnd = Date()
+        plan.timing = String(format: "sync %.1f · rows %.1f · files %.1f · live %d in %.1f · decide %.1f",
+                             tSync.timeIntervalSince(tStart), tRows.timeIntervalSince(tSync),
+                             tFiles.timeIntervalSince(tRows), needLive.count, liveSecs,
+                             tEnd.timeIntervalSince(tFiles) - liveSecs)
 
         // Diagnostics: one line per publish saying why each image is being sent
         if !reasons.isEmpty {

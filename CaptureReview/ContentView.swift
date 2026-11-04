@@ -766,6 +766,7 @@ struct ContentView: View {
                                    note: String(format: "%d variants · Capture One %.2f s · ratings %.2f s · compare %.2f s",
                                                 variants.count, tC1.timeIntervalSince(t0), t1.timeIntervalSince(tC1),
                                                 t2.timeIntervalSince(t1))
+                                       + (plan.timing.isEmpty ? "" : " (\(plan.timing))")
                                        + importing))
         }
         if let error = plan.error { return PublishOutcome(summary: error) }
