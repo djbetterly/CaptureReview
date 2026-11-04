@@ -287,7 +287,10 @@
     const folder = variants[0].folder_path || "";
     const section = sectionFor(folder);
     const el = frameCard(variants);
-    section.grid.appendChild(el);
+    // Keep frames in filename order (numbers compared as numbers), also for frames arriving live
+    const rel = variants[0].rel_path;
+    const next = [...section.grid.children].find(c => c.dataset.rel && naturalSort(c.dataset.rel, rel) > 0);
+    if (next) section.grid.insertBefore(el, next); else section.grid.appendChild(el);
     section.count += 1;
     section.h.textContent = folderLabel(folder) + " (" + section.count + ")";
     frames.set(variants[0].rel_path, { variants, el });
@@ -651,6 +654,7 @@
   function frameCard(variants, startAt = 0) {
     const el = document.createElement("div");
     el.className = "card";
+    el.dataset.rel = variants[0].rel_path;              // position in the folder (see addFrame)
     el.innerHTML = `<img loading="lazy" decoding="async" alt="">
       <span class="name"></span>
       <div class="meta"><span class="tags"></span><span class="stars"></span></div>

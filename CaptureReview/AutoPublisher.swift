@@ -202,8 +202,14 @@ final class AutoPublisher {
         if changed.isEmpty,
            now.timeIntervalSince(lastSweep) >= sweepSeconds,
            now.timeIntervalSince(lastFrameAt) >= sweepQuietSeconds {
-            lastSweep = now
-            await run(Array(folders), .full, label: "Full check of")
+            // One folder at a time, so new frames never wait behind a long Capture One read
+            // (a 333-frame sweep took 70 s on 4 Nov while frames were being added)
+            var finished = true
+            for folder in folders.sorted() {
+                if !changed.isEmpty { finished = false; break }        // new frames first
+                await run([folder], .full, label: "Full check of")
+            }
+            if finished { lastSweep = now }                           // else: try again once quiet
         }
     }
 

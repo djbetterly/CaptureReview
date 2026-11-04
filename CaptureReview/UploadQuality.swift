@@ -141,8 +141,9 @@ final class QualitySettings {
     /// measures the link better than small proofs do). Climbing later still needs a
     /// sustained good stretch; dropping is immediate.
     func seed(mbps: Double) {
-        guard !lowDataNetwork else { change(to: .cellular); return }
-        let start = tier(for: mbps)
+        // A metered network (e.g. iPhone hotspot) is only a hint: start Small there unless the
+        // speed test is clearly fast. (On 4 Nov it forced 408 of 409 proofs Small on an 8 Mbps link.)
+        let start = lowDataNetwork && mbps < cellularBelow * 2 ? .cellular : tier(for: mbps)
         if start != autoChoice { autoChoice = start }
         samplesSinceChange = 0
     }
@@ -192,7 +193,6 @@ final class QualitySettings {
     }
 
     private func decide() {
-        if lowDataNetwork { change(to: .cellular); return }
         guard !samples.isEmpty else { return }
 
         // Down: react to the last 3 uploads (a sudden drop shows up right away)
