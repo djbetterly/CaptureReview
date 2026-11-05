@@ -226,7 +226,12 @@ nonisolated enum CaptureOneScripts {
         set cvOut to {}
         tell application "Capture One"
             tell current document
-                set cvSel to selected variants
+                -- Capture One raises an error instead of returning an empty list when nothing is
+                -- selected (e.g. an empty collection): that's just "no selection"
+                set cvSel to {}
+                try
+                    set cvSel to selected variants
+                end try
                 set cvCount to count of cvSel
                 if cvCount > \(selectionLimit) then return {cvCount, {}}
                 repeat with k from 1 to cvCount
