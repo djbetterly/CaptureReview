@@ -229,6 +229,15 @@ actor ProofUploader {
 
     /// "<RAW stem>_v<position>" -> what to do with that rendered master
     private var pending: [String: Pending] = [:]
+    /// When each pending item was handed to Capture One, and how many times it was asked.
+    /// A render Capture One never delivers ("Could not process file", e.g. a frame still
+    /// importing with no preview for QuickProof) is dropped after `renderTimeout` and asked again.
+    private var pendingSince: [String: (at: Date, attempts: Int)] = [:]
+    private let renderTimeout: TimeInterval = 45
+    private let renderAttempts = 3
+    /// Last time Capture One delivered any render: a big batch can take minutes, so a render
+    /// only counts as lost once Capture One has gone quiet too.
+    private var lastMasterAt = Date.distantPast
     private var lastSizes: [String: Int] = [:]
     /// Last seen Capture One settings per variant, to report what changed (diagnostics)
     private var lastSettings: [String: Set<String>] = [:]
@@ -304,6 +313,7 @@ actor ProofUploader {
         // Renames, moves, deletes and restores go to the gallery FIRST: otherwise a renamed RAW
         // would look like a new frame and be uploaded a second time.
         let tStart = Date()
+        await expireLostRenders()
         await syncCatalog()
         let tSync = Date()
 
@@ -444,6 +454,11 @@ actor ProofUploader {
 
             // Already rendering/uploading from an earlier publish: don't queue it twice
             let flightKey = "\(stem)_v\(v.position)"
+            // Capture One failed to render it several times: auto-upload stops asking (manual Upload retries)
+            if let tries = pendingSince[flightKey]?.attempts, tries >= renderAttempts, pending[flightKey] == nil {
+                if debounce { plan.skipped += 1; continue }
+                pendingSince[flightKey] = nil
+            }
             if mode == .changed, let inFlight = pending[flightKey] {
                 if v.live.isEmpty || inFlight.stamp == v.live { plan.inProgress += 1 } else { plan.inProgressChanged += 1 }
                 continue
@@ -602,6 +617,9 @@ actor ProofUploader {
 
         if plan.duplicates.isEmpty && !plan.variantIDs.isEmpty {
             pending.merge(queued) { _, new in new }
+            for key in queued.keys {
+                pendingSince[key] = (Date(), (pendingSince[key]?.attempts ?? 0) + 1)
+            }
             let total = plan.variantIDs.count
             await MainActor.run { stats.begin(total: total) }
         }
@@ -1016,6 +1034,29 @@ actor ProofUploader {
     }
 
     /// Updates the stored fingerprint without re-sending the image.
+    /// Drops renders Capture One never delivered, so the next check asks for them again
+    /// (up to `renderAttempts` times) instead of counting them as "still uploading" forever.
+    private func expireLostRenders() async {
+        let now = Date()
+        for (key, item) in pending {
+            guard let since = pendingSince[key], now.timeIntervalSince(since.at) > renderTimeout,
+                  now.timeIntervalSince(lastMasterAt) > 20,                    // Capture One has gone quiet
+                  retryAfter[key] == nil,                                     // uploading/retrying: has its file
+                  !FileManager.default.fileExists(atPath: proofDir.appendingPathComponent(key + ".jpg").path)
+            else { continue }
+            pending[key] = nil
+            thumbDone[key] = nil
+            if since.attempts >= renderAttempts {
+                pendingSince[key] = (.distantFuture, since.attempts)          // stop asking; a manual Upload resets it
+                await addLog(name: item.displayName, kind: .failed,
+                             note: "Capture One didn't render it after \(since.attempts) tries (see Capture One's Events window)")
+            } else {
+                await addLog(name: item.displayName, kind: .info,
+                             note: "Capture One didn't render it within \(Int(renderTimeout)) s, asking again")
+            }
+        }
+    }
+
     /// Reads the live adjustments of new frames that were rendered without them (see deferredLive)
     /// and records them as what was sent. Runs after the render request, off the critical path.
     func fillDeferredLive(collectionNames: [String]) async {
@@ -1237,6 +1278,7 @@ actor ProofUploader {
     }
 
     private func handle(_ master: URL) async {
+        lastMasterAt = Date()
         let key = master.deletingPathExtension().lastPathComponent      // Shot_01-001_v1
         guard let item = pending[key] else {
             // Left over from a cancelled run or a restart: it can't be matched to a variant
@@ -1262,6 +1304,7 @@ actor ProofUploader {
             try await upload(master, item, key: key)
             try? FileManager.default.removeItem(at: master)
             pending[key] = nil
+            pendingSince[key] = nil
             retryAfter[key] = nil
             thumbDone[key] = nil
         } catch {

@@ -465,6 +465,9 @@ struct ContentView: View {
             if !outcome.busy, !(isSelection(scope) && outcome.queued == 0) { status = outcome.summary }
             return outcome
         }
+        auto.fillLive = { folders in
+            await uploader?.fillDeferredLive(collectionNames: folders.map { $0.isEmpty ? "Capture" : $0 })
+        }
         auto.reportMarks = { variants in
             await ratingSync?.reportCaptureOne(variants)
         }
@@ -789,8 +792,9 @@ struct ContentView: View {
                                bytes: 0, seconds: Date().timeIntervalSince(t3),
                                note: String(format: "%d variants · Capture One accepted in %.2f s",
                                             plan.variantIDs.count, Date().timeIntervalSince(t3))))
-        // New frames were rendered without waiting for their adjustments: read them now, in the background
-        Task { await uploader.fillDeferredLive(collectionNames: names) }
+        // New frames were rendered without waiting for their adjustments. Auto-upload reads them
+        // once frames stop landing (so the read never holds up the next batch); a manual publish now.
+        if !isAuto { Task { await uploader.fillDeferredLive(collectionNames: names) } }
         switch processed {
         case .success(let count):
             return PublishOutcome(summary: "\(plan.summary)\(waiting). Rendering \(count) variant\(count == "1" ? "" : "s").",

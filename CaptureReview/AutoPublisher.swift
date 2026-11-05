@@ -50,6 +50,8 @@ final class AutoPublisher {
 
     /// Does the actual work (the same publish the buttons use). Set by the window.
     var publish: ((_ folders: [String], _ scope: PublishScope) async -> PublishOutcome)?
+    /// Reads the adjustments of new frames that were rendered without them. Set by the window.
+    var fillLive: ((_ folders: [String]) async -> Void)?
     /// Receives every FRESH selection read (ratings + color tags go to the gallery). Set by the window.
     var reportMarks: ((_ variants: [C1Variant]) async -> Void)?
 
@@ -76,6 +78,7 @@ final class AutoPublisher {
     private var lastSelectionCheck = Date.distantPast
     private var lastSweep = Date()
     private var lastFrameAt = Date.distantPast
+    private var lastFill = Date.distantPast
     /// Failed selection checks in a row, and when to try again. Capture One refuses the
     /// selection now and then while it is busy (e.g. rendering a large batch), so a failure
     /// only pauses the check; it is retried with a growing delay, never switched off for good.
@@ -178,6 +181,16 @@ final class AutoPublisher {
             batch.forEach { recheck[$0] = nil }
             await run(Array(batch), .quick, label: "Uploading")
             return
+        }
+
+        // 1b. Frames stopped landing: read the adjustments of the ones just rendered (their
+        //     baseline for re-grades). Capture One answers this slowly while importing.
+        if changed.isEmpty, now.timeIntervalSince(lastFrameAt) >= 8,
+           now.timeIntervalSince(lastFill) >= 8, let fillLive {
+            lastFill = now
+            running = true
+            await fillLive(Array(folders))
+            running = false
         }
 
         // 2. Selection check: only the images selected in Capture One
