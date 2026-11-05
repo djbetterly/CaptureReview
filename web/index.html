@@ -25,7 +25,18 @@
   #status { color:var(--dim); margin-top:4px; }
   #status:empty { display:none; }
   /* Gallery name stays at the top while scrolling; each folder heading sticks just below it */
-  #top { position:sticky; top:0; z-index:6; background:var(--bg); padding:16px 0 10px; margin:0 0 4px; }
+  #top { position:sticky; top:0; z-index:6; background:var(--bg); padding:16px 0 10px; margin:0 0 4px;
+         display:grid; grid-template-columns:1fr auto; align-items:start; column-gap:12px; }
+  #top #status { grid-column:1; }
+  /* Full screen buttons (page and large view) */
+  .fs-btn { border:0; background:#222; color:#ccc; border-radius:8px; width:36px; height:32px; padding:0;
+            display:grid; place-items:center; cursor:pointer; grid-row:1; grid-column:2; }
+  .fs-btn svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; }
+  .fs-btn[hidden] { display:none; }
+  #lb-fs { background:#1a1a1a; width:32px; height:28px; }
+  /* Large view with the controls tucked away (tap the photo to bring them back) */
+  #lb.bare #lb-bar, #lb.bare #lb-strip, #lb.bare .lb-btn { display:none !important; }
+  #lb.bare #lb-stage { padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   h2 { font-size:16px; margin:24px 0 10px; color:var(--dim); }
   .section > h2 { color:var(--text); font-size:18px; position:sticky; top:calc(var(--top-h, 52px) - 1px); z-index:5;
                   background:var(--bg); box-shadow:0 -8px 0 var(--bg); margin:0; padding:14px 0 10px; }
@@ -221,6 +232,7 @@
   <main id="main">
     <div id="top">
       <h1>Capture Review</h1>
+      <button id="page-fs" class="fs-btn" hidden title="Full screen"></button>
       <div id="status">Loading…</div>
     </div>
     <div id="gallery"></div>
@@ -249,6 +261,7 @@
     <span id="lb-tags" class="tags"></span>
     <span id="lb-stars" class="stars"></span>
     <span id="lb-count"></span>
+    <button id="lb-fs" class="fs-btn" title="Full screen"></button>
     <span id="lb-strip-ctl" title="Filmstrip (F)">
       <button data-pos="off" title="Filmstrip off (F)"><svg viewBox="0 0 16 12"><rect x=".7" y=".7" width="14.6" height="10.6" rx="1.5"/></svg></button>
       <button data-pos="bottom" title="Filmstrip at the bottom"><svg viewBox="0 0 16 12"><rect x=".7" y=".7" width="14.6" height="10.6" rx="1.5"/><rect class="fill" x="1.5" y="8" width="13" height="2.5"/></svg></button>
@@ -614,7 +627,7 @@
   }
   function closeLightbox() {
     const card = lbCard();
-    lb.hidden = true; lbRel = null; stripKey = "";
+    lb.hidden = true; lbRel = null; stripKey = ""; lb.classList.remove("bare");
     document.body.classList.remove("lb-open");
     lbImg.removeAttribute("src");
     card?.scrollIntoView({ block: "nearest" });              // back where you were in the grid
@@ -679,7 +692,11 @@
   lbPrev.onclick = () => step(-1);
   lbNext.onclick = () => step(1);
   // Click the dark area around the image to close
-  document.getElementById("lb-stage").addEventListener("click", e => { if (e.target.id === "lb-stage") closeLightbox(); });
+  document.getElementById("lb-stage").addEventListener("click", e => {
+    if (e.target.id !== "lb-stage") return;
+    if (lb.classList.contains("bare")) { lb.classList.remove("bare"); drawFsButtons(); }   // controls back first
+    else closeLightbox();
+  });
   document.addEventListener("keydown", e => {
     if (lb.hidden || e.target.matches("input, textarea")) return;
     if (e.key === "Escape") closeLightbox();
@@ -694,6 +711,40 @@
     } else return;
     e.preventDefault();
   });
+  // --- Full screen ---
+  // iPad, Mac and most browsers have the Fullscreen API (Safari: webkit-prefixed on older versions).
+  // iPhone Safari doesn't allow it for pages, so there the large-view button hides the controls
+  // instead (tap the photo to bring them back), and Add to Home Screen gives a full-screen gallery.
+  const FS_IN = '<svg viewBox="0 0 16 16"><path d="M1.5 5.5v-4h4M10.5 1.5h4v4M14.5 10.5v4h-4M5.5 14.5h-4v-4"/></svg>';
+  const FS_OUT = '<svg viewBox="0 0 16 16"><path d="M5.5 1.5v4h-4M14.5 5.5h-4v-4M10.5 14.5v-4h4M1.5 10.5h4v4"/></svg>';
+  const root = document.documentElement;
+  const fsSupported = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+  const fsActive = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+  function toggleFullscreen() {
+    if (fsActive()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else (root.requestFullscreen || root.webkitRequestFullscreen).call(root);
+  }
+  const pageFs = document.getElementById("page-fs"), lbFs = document.getElementById("lb-fs");
+  function drawFsButtons() {
+    const on = fsSupported ? fsActive() : lb.classList.contains("bare");
+    for (const b of [pageFs, lbFs]) { b.innerHTML = on ? FS_OUT : FS_IN; b.title = on ? "Exit full screen" : "Full screen"; }
+  }
+  pageFs.hidden = !fsSupported;                       // iPhone: use Add to Home Screen instead
+  pageFs.onclick = toggleFullscreen;
+  lbFs.onclick = () => {
+    if (fsSupported) toggleFullscreen();
+    else { lb.classList.add("bare"); drawFsButtons(); }  // iPhone: just the photo
+  };
+  document.addEventListener("fullscreenchange", drawFsButtons);
+  document.addEventListener("webkitfullscreenchange", drawFsButtons);
+  drawFsButtons();
+  // A single tap on the photo hides/shows the controls (waits a moment so a double-tap can zoom)
+  let tapTimer = null;
+  function photoTapped() {
+    clearTimeout(tapTimer);
+    tapTimer = setTimeout(() => { lb.classList.toggle("bare"); drawFsButtons(); }, 320);
+  }
+
   // --- Zoom in the large view: pinch or double-tap on iPhone/iPad, double-click + drag with a mouse ---
   const lbStage = document.getElementById("lb-stage");
   const zoom = { s: 1, x: 0, y: 0 };
@@ -767,8 +818,8 @@
       }
       if (!moved && !multiTouch && e.target === lbImg) {             // double-tap = zoom in / out
         const now = Date.now();
-        if (now - lastTap < 300) { toggleZoom(t.clientX, t.clientY); lastTap = 0; e.preventDefault(); }
-        else lastTap = now;
+        if (now - lastTap < 300) { clearTimeout(tapTimer); toggleZoom(t.clientX, t.clientY); lastTap = 0; e.preventDefault(); }
+        else { lastTap = now; photoTapped(); }
       }
       if (zoom.s < 1.05 && zoom.s !== 1) resetZoom();
       pinch = null; pan = null; swipeX = null;
