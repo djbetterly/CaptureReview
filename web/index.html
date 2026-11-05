@@ -71,7 +71,35 @@
 
   /* Large view (lightbox) */
   #lb { position:fixed; inset:0; z-index:50; background:#0b0b0b; display:grid;
-        grid-template-rows:1fr auto; }
+        grid-template-rows:1fr auto; grid-template-columns:1fr;
+        grid-template-areas:"stage" "bar"; }
+  #lb-stage { grid-area:stage; }
+  #lb-bar { grid-area:bar; }
+  /* Filmstrip: bottom, left or right (or off), remembered per browser */
+  #lb-strip { grid-area:strip; display:none; gap:6px; padding:8px; background:#080808; scrollbar-width:thin; }
+  #lb.strip-bottom { grid-template-rows:1fr auto auto; grid-template-areas:"stage" "bar" "strip"; }
+  #lb.strip-left   { grid-template-columns:auto 1fr; grid-template-areas:"strip stage" "strip bar"; }
+  #lb.strip-right  { grid-template-columns:1fr auto; grid-template-areas:"stage strip" "bar strip"; }
+  #lb.strip-bottom #lb-strip { display:flex; overflow-x:auto; overflow-y:hidden; border-top:1px solid #1e1e1e; }
+  #lb.strip-left #lb-strip, #lb.strip-right #lb-strip { display:flex; flex-direction:column; overflow-y:auto; width:132px; }
+  #lb.strip-left #lb-strip { border-right:1px solid #1e1e1e; }
+  #lb.strip-right #lb-strip { border-left:1px solid #1e1e1e; }
+  .strip-thumb { flex:none; position:relative; padding:0; border:2px solid transparent; border-radius:4px;
+                 background:#1a1a1a; cursor:pointer; opacity:.65; overflow:hidden; }
+  .strip-thumb:hover { opacity:1; }
+  .strip-thumb.on { opacity:1; border-color:var(--accent); }
+  .strip-thumb img { display:block; width:100%; height:100%; object-fit:cover; }
+  #lb.strip-bottom .strip-thumb { width:96px; height:64px; }
+  #lb.strip-left .strip-thumb, #lb.strip-right .strip-thumb { width:112px; height:75px; }
+  .strip-thumb .stag { position:absolute; left:4px; bottom:4px; width:8px; height:8px; border-radius:50%; }
+  /* Filmstrip controls in the bar */
+  #lb-strip-ctl { display:inline-flex; gap:2px; background:#1a1a1a; border-radius:6px; padding:2px; }
+  #lb-strip-ctl button { border:0; background:none; color:var(--dim); width:28px; height:24px; border-radius:4px;
+                         cursor:pointer; padding:0; display:grid; place-items:center; }
+  #lb-strip-ctl button:hover { color:var(--text); }
+  #lb-strip-ctl button.on { background:#333; color:var(--text); }
+  #lb-strip-ctl svg { width:16px; height:12px; fill:none; stroke:currentColor; stroke-width:1.4; }
+  #lb-strip-ctl svg .fill { fill:currentColor; stroke:none; }
   #lb[hidden] { display:none; }
   #lb-stage { position:relative; display:flex; align-items:center; justify-content:center; min-height:0; padding:16px 64px 0; }
   #lb-img { max-width:100%; max-height:100%; object-fit:contain; user-select:none; -webkit-user-drag:none; }
@@ -90,6 +118,13 @@
   #lb .variants { padding:0; }
   body.lb-open #main { overflow:hidden; }
   @media (max-width:700px) {
+    /* Phones: side strips are too narrow, so the strip always sits at the bottom */
+    #lb.strip-left, #lb.strip-right { grid-template-columns:1fr; grid-template-rows:1fr auto auto;
+                                      grid-template-areas:"stage" "bar" "strip"; }
+    #lb.strip-left #lb-strip, #lb.strip-right #lb-strip { flex-direction:row; overflow-x:auto; overflow-y:hidden;
+                                                          width:auto; border:0; border-top:1px solid #1e1e1e; }
+    #lb .strip-thumb { width:72px !important; height:48px !important; }
+    #lb-strip-ctl .side { display:none; }
     #lb-stage { padding:8px 0 0; }
     #lb-prev, #lb-next { top:auto; bottom:8px; transform:none; }
   }
@@ -176,7 +211,14 @@
     <span id="lb-tags" class="tags"></span>
     <span id="lb-stars" class="stars"></span>
     <span id="lb-count"></span>
+    <span id="lb-strip-ctl" title="Filmstrip (F)">
+      <button data-pos="off" title="Filmstrip off (F)"><svg viewBox="0 0 16 12"><rect x=".7" y=".7" width="14.6" height="10.6" rx="1.5"/></svg></button>
+      <button data-pos="bottom" title="Filmstrip at the bottom"><svg viewBox="0 0 16 12"><rect x=".7" y=".7" width="14.6" height="10.6" rx="1.5"/><rect class="fill" x="1.5" y="8" width="13" height="2.5"/></svg></button>
+      <button data-pos="left" class="side" title="Filmstrip on the left"><svg viewBox="0 0 16 12"><rect x=".7" y=".7" width="14.6" height="10.6" rx="1.5"/><rect class="fill" x="1.5" y="1.5" width="3.5" height="9"/></svg></button>
+      <button data-pos="right" class="side" title="Filmstrip on the right"><svg viewBox="0 0 16 12"><rect x=".7" y=".7" width="14.6" height="10.6" rx="1.5"/><rect class="fill" x="11" y="1.5" width="3.5" height="9"/></svg></button>
+    </span>
   </div>
+  <div id="lb-strip" aria-label="Filmstrip"></div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4"></script>
@@ -478,6 +520,52 @@
   }
 
   const lbCard = () => lbRel !== null ? frames.get(lbRel)?.el : null;
+
+  // --- Filmstrip in the large view: bottom / left / right / off, remembered in this browser ---
+  const lbStrip = document.getElementById("lb-strip");
+  const stripCtl = document.getElementById("lb-strip-ctl");
+  let stripPos = "bottom", stripLastOn = "bottom", stripKey = "";
+  try { stripPos = localStorage.getItem("cr.strip") || "bottom"; } catch {}
+  if (stripPos !== "off") stripLastOn = stripPos;
+  function setStrip(pos) {
+    stripPos = pos;
+    if (pos !== "off") stripLastOn = pos;
+    try { localStorage.setItem("cr.strip", pos); } catch {}
+    lb.classList.remove("strip-bottom", "strip-left", "strip-right");
+    if (pos !== "off") lb.classList.add("strip-" + pos);
+    stripCtl.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.pos === pos));
+    stripKey = "";                                    // rebuild for the new layout
+    if (!lb.hidden) drawStrip();
+  }
+  stripCtl.querySelectorAll("button").forEach(b => b.onclick = () => setStrip(b.dataset.pos));
+  function drawStrip() {
+    if (stripPos === "off") return;
+    const cards = visibleCards();
+    const key = cards.map(c => c.dataset.rel + ":" + c.api.current + ":" + (c.api.mark().color || "")).join(",");
+    if (key !== stripKey) {                           // the visible set changed: rebuild
+      stripKey = key;
+      lbStrip.replaceChildren(...cards.map(c => {
+        const v = c.api.variants[c.api.current];
+        const b = document.createElement("button");
+        b.className = "strip-thumb";
+        b.dataset.rel = c.dataset.rel;
+        b.title = v.display_name || v.filename;
+        const img = document.createElement("img");
+        img.loading = "lazy"; img.decoding = "async"; img.alt = "";
+        img.src = publicUrl(v.thumb_path || v.storage_path);
+        b.appendChild(img);
+        const tag = c.api.mark().color;
+        if (tag) { const d = document.createElement("span"); d.className = "stag";
+                   d.style.background = (TAGS.find(([n]) => n === tag) || [])[1] || "#888"; b.appendChild(d); }
+        b.onclick = () => { lbRel = b.dataset.rel; drawLightbox(true); };
+        return b;
+      }));
+    }
+    let on = null;
+    for (const b of lbStrip.children) { const is = b.dataset.rel === lbRel; b.classList.toggle("on", is); if (is) on = b; }
+    on?.scrollIntoView({ block: "nearest", inline: "center" });
+  }
+  setStrip(stripPos);
   const visibleCards = () => [...galleryEl.querySelectorAll(".section:not(.hidden):not(.empty) .card:not(.filtered)")];
 
   function openLightbox(relPath) {
@@ -488,7 +576,7 @@
   }
   function closeLightbox() {
     const card = lbCard();
-    lb.hidden = true; lbRel = null;
+    lb.hidden = true; lbRel = null; stripKey = "";
     document.body.classList.remove("lb-open");
     lbImg.removeAttribute("src");
     card?.scrollIntoView({ block: "nearest" });              // back where you were in the grid
@@ -530,6 +618,7 @@
     lbCount.textContent = i >= 0 ? `${i + 1} / ${cards.length}` : "not in current filter";
     lbPrev.disabled = (i >= 0 ? i : lbIndex) <= 0;
     lbNext.disabled = i >= 0 ? i >= cards.length - 1 : lbIndex >= cards.length;
+    drawStrip();
 
     if (!newImage && lbImg.dataset.path === v.storage_path) return;
     // Thumbnail straight away (already cached by the grid), full proof as soon as it arrives
@@ -557,6 +646,7 @@
     if (e.key === "Escape") closeLightbox();
     else if (e.key === "ArrowLeft") step(-1);
     else if (e.key === "ArrowRight") step(1);
+    else if (e.key === "f" || e.key === "F") setStrip(stripPos === "off" ? stripLastOn : "off");
     else if (/^[0-5]$/.test(e.key)) {
       const card = lbCard(); if (!card) return;
       const n = Number(e.key);
