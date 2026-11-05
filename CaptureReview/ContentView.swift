@@ -40,6 +40,7 @@ struct ContentView: View {
     @AppStorage("showTestTools") private var showTestTools = false
     /// Settings > General: new folders start hidden from the client (publish when ready)
     @AppStorage("newFoldersHidden") private var newFoldersHidden = false
+    @AppStorage("autoRegrades") private var autoRegrades = true          // Settings > General
 
     var body: some View {
         if serviceKey.isEmpty { keySetup } else { main }
@@ -754,7 +755,7 @@ struct ContentView: View {
         let t1 = Date()
         // Auto-publish sends new frames only; re-grades wait for the Publish button
         let plan = await uploader.planBatch(variants: variants, folders: chosen, mode: mode,
-                                            debounce: isAuto, scoped: scoped, holdRegrades: isAuto)
+                                            debounce: isAuto, scoped: scoped, holdRegrades: isAuto && !autoRegrades)
         let t2 = Date()
 
         // Timing for every check, so large sessions show where the time goes.

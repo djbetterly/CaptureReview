@@ -415,6 +415,7 @@ actor ProofUploader {
             selected = filled
         }
         var queued: [String: Pending] = [:]
+        var regradesQueued = 0
         var reasons: [String] = []
         var keyFolder: [String: String] = [:]
 
@@ -538,6 +539,10 @@ actor ProofUploader {
                             continue
                         }
                     }
+                    // Auto-upload: a few re-grades per check (e.g. a copy/apply across a whole
+                    // folder), so new frames are never stuck behind a long re-render
+                    if debounce, regradesQueued >= newFramesPerCheck { plan.regradeSettling += 1; continue }
+                    regradesQueued += 1
                     lastLive[settingsKey] = nil
                     plan.changed += 1
                     reasons.append("\(label) re-graded")
@@ -561,6 +566,8 @@ actor ProofUploader {
                         }
                         continue
                     }
+                    if debounce, regradesQueued >= newFramesPerCheck { plan.regradeSettling += 1; continue }
+                    regradesQueued += 1
                     plan.changed += 1
                     reasons.append("\(label) settings file changed")
                 } else {
