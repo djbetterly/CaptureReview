@@ -415,10 +415,10 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var progressSection: some View {
-        if stats.total > 0 {
+        if stats.shownTotal > 0 {
             VStack(alignment: .leading, spacing: 6) {
-                ProgressView(value: Double(min(stats.uploaded, stats.total)), total: Double(stats.total)) {
-                    Text("Uploaded \(stats.uploaded) of \(stats.total)")
+                ProgressView(value: Double(min(stats.uploaded, stats.shownTotal)), total: Double(stats.shownTotal)) {
+                    Text("Uploaded \(stats.uploaded) of \(stats.shownTotal)")
                 }
                 Text(progressText).font(.caption).monospacedDigit()
                 Text(stats.bottleneck).font(.caption.bold())
@@ -436,6 +436,7 @@ struct ContentView: View {
 
     private var progressText: String {
         var text = "\(stats.waitingOnDisk) rendered, waiting  ·  \(stats.inFlight) uploading now  ·  \(Int(stats.perMinute)) per min"
+        if stats.upcoming > 0 { text = "\(stats.upcoming) waiting for Capture One  ·  " + text }
         if stats.retries > 0 { text += "  ·  \(stats.retries) retries" }
         return text
     }

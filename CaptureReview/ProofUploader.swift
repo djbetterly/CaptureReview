@@ -71,6 +71,10 @@ final class UploadStats {
     var total = 0              // variants expected in the current publish
     var uploaded = 0
     var waitingOnDisk = 0      // rendered by Capture One, not yet uploaded
+    var upcoming = 0           // new frames on disk not yet handed to Capture One (12 per check)
+
+    /// What the bar shows: everything known to be on its way, not just the groups started so far
+    var shownTotal: Int { total + upcoming }
     var inFlight = 0
     var retries = 0
     var startedAt: Date?
@@ -84,7 +88,7 @@ final class UploadStats {
     /// Adds a publish to the queue. If the previous batch is finished, starts fresh;
     /// if uploads are still running (auto-publish while shooting), extends the total instead.
     func begin(total newTotal: Int) {
-        if uploaded >= total {
+        if uploaded >= total && upcoming == 0 {
             total = newTotal; uploaded = 0; retries = 0; startedAt = Date()
             bytesSent = 0; proofBytes = 0; thumbBytes = 0; lastUpload = ""
         } else {
@@ -175,6 +179,7 @@ nonisolated struct PublishPlan: Sendable {
     var skipped = 0
     var duplicates: [String] = []
     var error: String?
+    var waitingTurn = 0          // new frames left for the next check (12 per check)
     /// Where the compare time went (for the log): "sync 0.2 · rows 0.3 · live 56 in 40.1 · files 1.2 · decide 0.4"
     var timing = ""
 
@@ -388,6 +393,7 @@ actor ProofUploader {
         if !deferredNew.isEmpty {
             selected.removeAll { deferredNew.contains($0.variant.id) }
             plan.notInCaptureOne += deferredNew.count          // checked again shortly
+            plan.waitingTurn = deferredNew.count
         }
         let tFiles = Date()
         var liveSecs = 0.0
@@ -610,6 +616,9 @@ actor ProofUploader {
             if !v.liveText.isEmpty { sentLiveText[settingsKey] = v.liveText }
         }
         plan.regradesWaiting = waitingRegrades.count
+        // Progress bar: count the new frames still waiting their turn (selection checks don't see them)
+        let upcoming = scoped ? nil : plan.waitingTurn
+        let queuedNow = plan.duplicates.isEmpty ? plan.variantIDs.count : 0
         let tEnd = Date()
         plan.timing = String(format: "sync %.1f · rows %.1f · files %.1f · live %d in %.1f · decide %.1f",
                              tSync.timeIntervalSince(tStart), tRows.timeIntervalSince(tSync),
@@ -628,9 +637,9 @@ actor ProofUploader {
             for key in queued.keys {
                 pendingSince[key] = (Date(), (pendingSince[key]?.attempts ?? 0) + 1)
             }
-            let total = plan.variantIDs.count
-            await MainActor.run { stats.begin(total: total) }
+            await MainActor.run { stats.begin(total: queuedNow) }
         }
+        if let upcoming { await MainActor.run { stats.upcoming = upcoming } }
         return plan
     }
 
