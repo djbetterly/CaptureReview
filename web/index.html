@@ -407,7 +407,7 @@
       s.h.textContent = folderLabel(folder) + (active ? ` (${n} of ${s.count})` : ` (${s.count})`);
     }
     clearEl.hidden = !active;
-    if (active) statusEl.textContent = `Showing ${visible} of ${inScope} frames`;
+    if (active) statusEl.textContent = `Showing ${visible} of ${inScope}`;
     else statusEl.textContent = baseStatus;
   }
   let filterTimer = null;
@@ -607,11 +607,13 @@
     applyFolderFilter();
     renderSidebar();
     const all = [...frames.values()].flatMap(f => f.variants);
-    statusEl.textContent = frames.size + " frames, " + all.length + " images";
-    baseStatus = statusEl.textContent;
+    // No running total under the title: the sidebar and folder headings already show the counts.
+    // (Frame/image totals stay in the info view, press i.)
+    statusEl.textContent = "";
+    baseStatus = "";
     const proofSum = all.reduce((a, r) => a + (r.proof_bytes || 0), 0);
     const thumbSum = all.reduce((a, r) => a + (r.thumb_bytes || 0), 0);
-    totals = statusEl.textContent + " · proofs " + (proofSum / 1048576).toFixed(1) + " MB (avg " + kb(proofSum / Math.max(all.length, 1)) +
+    totals = frames.size + " frames · " + all.length + " images · proofs " + (proofSum / 1048576).toFixed(1) + " MB (avg " + kb(proofSum / Math.max(all.length, 1)) +
              ") · thumbs " + (thumbSum / 1048576).toFixed(1) + " MB (avg " + kb(thumbSum / Math.max(all.length, 1)) + ") · press i to hide";
     if (document.body.classList.contains("show-info")) statusEl.textContent = totals;
     refreshFilters();
