@@ -15,7 +15,9 @@
   .sub { color:var(--dim); margin:4px 0 0; }
   .top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:24px; }
   button, .btn { font:inherit; font-size:14px; color:var(--text); background:#1a2029; border:1px solid var(--line);
-                 border-radius:9px; padding:8px 14px; cursor:pointer; text-decoration:none; white-space:nowrap; }
+                 border-radius:9px; padding:8px 14px; cursor:pointer; text-decoration:none; white-space:nowrap;
+                 text-align:center; display:inline-block; }
+  .pair { display:flex; gap:8px; } .pair > * { flex:1; }
   button:hover, .btn:hover { border-color:#3a4552; }
   button.primary { background:linear-gradient(90deg,#3e63dd,#5ec8e5); border:0; color:#071018; font-weight:600; }
   button.danger { color:var(--danger); }
@@ -43,7 +45,7 @@
   code { font:13px ui-monospace, SFMono-Regular, Menlo, monospace; background:#0f1318; border:1px solid var(--line);
          border-radius:6px; padding:1px 6px; }
   .link { font:14px ui-monospace, Menlo, monospace; color:var(--accent); margin:10px 0 6px; word-break:break-all; }
-  .actions { display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
+  .actions { display:flex; flex-direction:column; gap:8px; align-items:stretch; min-width:230px; }
   .muted { color:var(--dim); font-size:14px; }
   .login { max-width:380px; margin:12vh auto; padding:28px; }
   .login form { display:flex; flex-direction:column; gap:10px; margin-top:18px; }
@@ -208,7 +210,10 @@
           g.client_marks ? ` · ${g.client_marks} rated/tagged by the client` : "",
           awaiting ? ` · ${awaiting} awaiting upload` : "")),
       h("div", { class:"actions" },
-        h("button", { class:"primary", onclick: () => copyInvite(g) }, "Copy link & code"),
+        canShare ? h("button", { class:"primary", onclick: () => shareInvite(g) }, "Share invite…") : null,
+        h("div", { class:"pair" },
+          h("button", { class: canShare ? "" : "primary", onclick: () => copyText(clientLink(g.slug), "Link copied") }, "Copy link"),
+          h("button", { class: canShare ? "" : "primary", onclick: () => copyText(g.access_code || "", "Code copied") }, "Copy code")),
         h("button", { onclick: () => { location.hash = "gallery=" + g.id; } }, "Open gallery (admin)"),
         h("a", { class:"btn", href: link + (g.access_code ? "#code=" + encodeURIComponent(g.access_code) : ""), target:"_blank", rel:"noopener" }, "View as client"),
         h("button", { onclick: () => setActive(g, !g.active) }, g.active ? "Close gallery" : "Reopen gallery"),
@@ -241,11 +246,19 @@
     location.hash = "";
     showDashboard();
   }
-  async function copyInvite(g) {
-    const text = `${g.name}\nYour gallery: ${clientLink(g.slug)}\nAccess code: ${g.access_code || ""}`;
-    try { await navigator.clipboard.writeText(text); toast("Link and code copied: paste into email or a message"); }
+  // Link and code are copied separately so they can go out in two messages (the link alone
+  // doesn't open the gallery). On iPhone/iPad, Share opens the share sheet with both in one invite.
+  const canShare = typeof navigator.share === "function" && matchMedia("(pointer:coarse)").matches;
+  async function copyText(text, done) {
+    try { await navigator.clipboard.writeText(text); toast(done); }
     catch { prompt("Copy this:", text); }
   }
+  async function shareInvite(g) {
+    const text = `${g.name}\nYour gallery: ${clientLink(g.slug)}\nAccess code: ${g.access_code || ""}`;
+    try { await navigator.share({ title: g.name, text }); }
+    catch (e) { if (e.name !== "AbortError") copyText(text, "Invite copied"); }
+  }
+
   async function setActive(g, active) {
     if (!active && !confirm(`Close "${g.name}"? The client's link stops working until you reopen it.`)) return;
     const { error } = await sb.from("galleries").update({ active }).eq("id", g.id);
@@ -271,7 +284,8 @@
           h("p", { class:"sub" }, `Admin view: you see hidden folders too. Code `, h("code", {}, g.access_code || "none"),
             g.last_opened_at ? ` · client last opened it ${ago(g.last_opened_at)}` : " · no client access yet")),
         h("div", { style:"display:flex;gap:8px" },
-          h("button", { onclick: () => copyInvite(g) }, "Copy link & code"),
+          h("button", { onclick: () => copyText(clientLink(g.slug), "Link copied") }, "Copy link"),
+          h("button", { onclick: () => copyText(g.access_code || "", "Code copied") }, "Copy code"),
           h("button", { onclick: () => { location.hash = ""; } }, "All galleries"),
           h("button", { class:"danger", onclick: () => deleteGallery({ ...g, images: data.images.length }) }, "Delete gallery…"))),
       h("div", { class:"card folders" }, ...data.folders.map(f => h("div", { class:"frow" },
