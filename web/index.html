@@ -12,11 +12,15 @@
   /* Layout: folder tree on the left (like Capture One's library), gallery on the right */
   .app { display:grid; grid-template-columns:240px 1fr; height:100vh; }
   #sidebar { background:#181818; border-right:1px solid #262626; overflow-y:auto; padding:12px 8px; }
-  #main { overflow-y:auto; padding:16px; }
-  h1 { font-size:20px; margin:0 0 4px; }
-  #status { color:var(--dim); margin-bottom:16px; }
+  #main { overflow-y:auto; padding:0 16px 16px; }
+  h1 { font-size:20px; margin:0; }
+  #status { color:var(--dim); margin-top:4px; }
+  #status:empty { display:none; }
+  /* Gallery name stays at the top while scrolling; each folder heading sticks just below it */
+  #top { position:sticky; top:0; z-index:6; background:var(--bg); padding:16px 0 10px; margin:0 0 4px; }
   h2 { font-size:16px; margin:24px 0 10px; color:var(--dim); }
-  .section > h2 { color:var(--text); font-size:18px; }
+  .section > h2 { color:var(--text); font-size:18px; position:sticky; top:calc(var(--top-h, 52px) - 1px); z-index:5;
+                  background:var(--bg); box-shadow:0 -8px 0 var(--bg); margin:0; padding:14px 0 10px; }
   .section > h2 .sub { display:block; margin-top:2px; color:var(--dim); font-size:13px; font-weight:400; }
   .section.hidden { display:none; }
   /* Folder tree rows */
@@ -142,8 +146,10 @@
     </details>
   </nav>
   <main id="main">
-    <h1>Capture Review</h1>
-    <div id="status">Loading…</div>
+    <div id="top">
+      <h1>Capture Review</h1>
+      <div id="status">Loading…</div>
+    </div>
     <div id="gallery"></div>
   </main>
 </div>
@@ -204,6 +210,10 @@
   try { accessCode = new URLSearchParams(location.hash.slice(1)).get("code") || localStorage.getItem(CODE_KEY) || ""; } catch {}
   const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
   const statusEl = document.getElementById("status");
+  // Folder headings stick right under the title bar, whatever its height (status line on/off, phone wrap)
+  const topEl = document.getElementById("top");
+  new ResizeObserver(() => document.getElementById("main").style.setProperty("--top-h", topEl.offsetHeight + "px"))
+    .observe(topEl);
   const galleryEl = document.getElementById("gallery");
   const publicUrl = path => path ? sb.storage.from("proofs").getPublicUrl(path).data.publicUrl : "";
 
