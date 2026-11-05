@@ -16,6 +16,8 @@
   h1 { font-size:20px; margin:0 0 4px; }
   #status { color:var(--dim); margin-bottom:16px; }
   h2 { font-size:16px; margin:24px 0 10px; color:var(--dim); }
+  .section > h2 { color:var(--text); font-size:18px; }
+  .section > h2 .sub { display:block; margin-top:2px; color:var(--dim); font-size:13px; font-weight:400; }
   .section.hidden { display:none; }
   /* Folder tree rows */
   .tree-row { display:flex; align-items:center; gap:8px; width:100%; padding:6px 8px; border:0;
@@ -266,6 +268,15 @@
   }
 
   // Folder heading + grid, created the first time a folder has a frame (kept in name order)
+  // Folder heading: the folder name, with the frame count on the line beneath it
+  function setHeading(section, folder, shown) {
+    const n = section.count;
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = (shown === undefined ? "" : shown + " of ") + n + (n === 1 ? " Frame" : " Frames");
+    section.h.replaceChildren(document.createTextNode(folderLabel(folder)), sub);
+  }
+
   function sectionFor(folder) {
     if (!folderSections.has(folder)) {
       const wrap = document.createElement("section");
@@ -292,7 +303,7 @@
     const next = [...section.grid.children].find(c => c.dataset.rel && naturalSort(c.dataset.rel, rel) > 0);
     if (next) section.grid.insertBefore(el, next); else section.grid.appendChild(el);
     section.count += 1;
-    section.h.textContent = folderLabel(folder) + " (" + section.count + ")";
+    setHeading(section, folder);
     frames.set(variants[0].rel_path, { variants, el });
     for (const v of variants) idToRel.set(v.id, v.rel_path);
   }
@@ -320,7 +331,7 @@
     const section = folderSections.get(folder);
     if (section) {
       section.count = Math.max(0, section.count - 1);
-      section.h.textContent = folderLabel(folder) + " (" + section.count + ")";
+      setHeading(section, folder);
       section.wrap.classList.toggle("empty", section.count === 0);
     }
     if (lbRel === rel) { if (movedTo !== null) lbRel = movedTo; else closeLightbox(); }
@@ -404,7 +415,7 @@
     for (const [folder, s] of folderSections) {
       const n = shown.get(folder) || 0;
       s.wrap.classList.toggle("empty", active && n === 0);
-      s.h.textContent = folderLabel(folder) + (active ? ` (${n} of ${s.count})` : ` (${s.count})`);
+      setHeading(s, folder, active ? n : undefined);
     }
     clearEl.hidden = !active;
     if (active) statusEl.textContent = `Showing ${visible} of ${inScope}`;
