@@ -1,0 +1,10 @@
+// Cloudflare deploy for the client gallery and admin page (review.dbcapture.com).
+// The "review" Worker serves the web/ folder as static files; Cloudflare's Git build runs
+// `npx wrangler deploy` on each push, so a push is a deploy.
+{
+  "name": "review",
+  "compatibility_date": "2026-11-03",
+  "assets": {
+    "directory": "./web"
+  }
+}
