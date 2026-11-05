@@ -39,4 +39,16 @@ nonisolated enum GalleryDirectory {
             .execute().value
         return GalleryRef(id: made.id, name: made.name, created: true)
     }
+
+    /// Whether the gallery still exists on the server (it can be deleted from the admin page).
+    /// nil = couldn't tell (offline): keep using the remembered gallery.
+    static func exists(id: UUID, supabaseURL: URL, serviceKey: String) async -> Bool? {
+        let client = SupabaseClient(supabaseURL: supabaseURL, supabaseKey: serviceKey,
+                                    options: SupabaseClientOptions(auth: .init(emitLocalSessionAsInitialSession: true)))
+        do {
+            let rows: [Row] = try await client.from("galleries").select("id, name")
+                .eq("id", value: id.uuidString).limit(1).execute().value
+            return !rows.isEmpty
+        } catch { return nil }
+    }
 }

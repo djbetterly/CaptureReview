@@ -211,7 +211,35 @@
         h("button", { class:"primary", onclick: () => copyInvite(g) }, "Copy link & code"),
         h("button", { onclick: () => { location.hash = "gallery=" + g.id; } }, "Open gallery (admin)"),
         h("a", { class:"btn", href: link + (g.access_code ? "#code=" + encodeURIComponent(g.access_code) : ""), target:"_blank", rel:"noopener" }, "View as client"),
-        h("button", { onclick: () => setActive(g, !g.active) }, g.active ? "Close gallery" : "Reopen gallery")));
+        h("button", { onclick: () => setActive(g, !g.active) }, g.active ? "Close gallery" : "Reopen gallery"),
+        h("button", { class:"danger", onclick: () => deleteGallery(g) }, "Delete gallery…")));
+  }
+
+  // Deletes the gallery for good: its files in Storage first, then the gallery row (images,
+  // client ratings and folder settings go with it). RAW files and the session are not touched.
+  async function deleteGallery(g) {
+    const typed = prompt(`Delete "${g.name}" for good?\n\n` +
+      `This removes the gallery page, its ${g.images} proof image(s) and the client's ratings and color tags. ` +
+      `The client's link stops working. Your RAW files and the Capture One session are not touched; ` +
+      `opening the session in Capture Review later starts a new, empty gallery.\n\n` +
+      `Type the gallery name to confirm:`);
+    if (typed === null) return;
+    if (typed.trim() !== g.name) return toast("The name didn't match. Nothing was deleted.");
+    toast("Deleting files…");
+    const { data: list, error: listError } = await sb.rpc("admin_gallery_files", { p_gallery: g.id });
+    if (listError) return toast("Couldn't list the files: " + listError.message);
+    const paths = (list || []).map(x => typeof x === "string" ? x : Object.values(x)[0]);
+    for (let i = 0; i < paths.length; i += 500) {
+      const { error } = await sb.storage.from("proofs").remove(paths.slice(i, i + 500));
+      if (error) return toast("Stopped: couldn't delete files (" + error.message + "). The gallery is still there.");
+      toast(`Deleting files… ${Math.min(i + 500, paths.length)} of ${paths.length}`);
+    }
+    const { data, error } = await sb.rpc("admin_delete_gallery", { p_gallery: g.id });
+    if (error) return toast("Files removed, but the gallery couldn't be deleted: " + error.message);
+    toast(`Deleted "${data.name}": ${data.images} image(s), ${paths.length} file(s)` +
+          (data.files_left ? ` (${data.files_left} file(s) left in Storage)` : ""));
+    location.hash = "";
+    showDashboard();
   }
   async function copyInvite(g) {
     const text = `${g.name}\nYour gallery: ${clientLink(g.slug)}\nAccess code: ${g.access_code || ""}`;
@@ -244,7 +272,8 @@
             g.last_opened_at ? ` · client last opened it ${ago(g.last_opened_at)}` : " · no client access yet")),
         h("div", { style:"display:flex;gap:8px" },
           h("button", { onclick: () => copyInvite(g) }, "Copy link & code"),
-          h("button", { onclick: () => { location.hash = ""; } }, "All galleries"))),
+          h("button", { onclick: () => { location.hash = ""; } }, "All galleries"),
+          h("button", { class:"danger", onclick: () => deleteGallery({ ...g, images: data.images.length }) }, "Delete gallery…"))),
       h("div", { class:"card folders" }, ...data.folders.map(f => h("div", { class:"frow" },
         h("span", { class:"name" }, label(f.folder_path)),
         h("span", { class:"counts" }, `${f.frames} uploaded` + (f.shots ? ` of ${Math.max(f.shots, f.frames)} shots` : "")),

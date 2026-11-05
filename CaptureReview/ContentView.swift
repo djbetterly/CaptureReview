@@ -548,7 +548,16 @@ struct ContentView: View {
             // This session's gallery: remembered in the catalog (works offline), else found by the
             // session id on the server, else created and named after the session folder.
             let galleryID: UUID
-            if let known = await cat.storedGalleryID() {
+            var remembered = await cat.storedGalleryID()
+            if let known = remembered,
+               await GalleryDirectory.exists(id: known, supabaseURL: Config.supabaseURL, serviceKey: serviceKey) == false {
+                // Deleted from the admin page: start a new gallery for this session
+                remembered = nil
+                log.add(UploadLogEntry(time: Date(), name: "Gallery", kind: .info, quality: "", width: 0, height: 0,
+                                       bytes: 0, seconds: 0,
+                                       note: "This session's gallery was deleted on the server; starting a new one"))
+            }
+            if let known = remembered {
                 galleryID = known
             } else {
                 status = "Finding this session's gallery…"
